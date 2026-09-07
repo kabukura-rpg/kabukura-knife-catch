@@ -3,42 +3,29 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
+<meta name="theme-color" content="#080d15">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="description" content="落ちてくるナイフの柄だけを掴み続ける、ワンタッチ・エンドレス・スコアアタック。">
-<meta property="og:title" content="落ちるナイフを掴め | CATCH THE FALLING KNIFE">
-<meta property="og:description" content="押している間は右、離すと左。落ちるナイフの柄を掴み続けろ。">
+<meta name="description" content="タップで上昇、何もしないとゆっくり落下。流れてくるローソク足の隙間を抜けて、どこまでも相場についていくワンタップ・エンドレスゲーム。">
+<meta property="og:title" content="チャートを駆けろ！ | CHART RIDER">
+<meta property="og:description" content="タップで上昇。何もしないと落下。ローソク足にぶつかったら終了。">
 <meta property="og:type" content="website">
-<title>落ちるナイフを掴め</title>
+<title>チャートを駆けろ！ | CHART RIDER</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
-  <canvas id="game"></canvas>
-
-  <!-- ===== HUD ===== -->
-  <div id="hud" class="hidden">
-    <div id="hudMain">
-      <div class="hud-label">CATCH</div>
-      <div id="hudCatch">0</div>
-    </div>
-    <div id="hudSub">
-      <div>SCORE <b id="hudScore">0</b></div>
-      <div>COMBO <b id="hudCombo">0</b></div>
-      <div>BEST <b id="hudBest">0</b></div>
-    </div>
-  </div>
+  <canvas id="gameCanvas"></canvas>
 
   <!-- ===== タイトル ===== -->
   <section class="screen" id="scTitle">
     <div class="panel">
-      <div class="title-sub">CATCH THE FALLING KNIFE</div>
-      <h1 class="title-main">落ちるナイフを掴め</h1>
-      <p class="quote">「落ちるナイフを掴むな」<br><span>― という格言に、あえて逆らう ―</span></p>
+      <div class="title-sub">CHART RIDER</div>
+      <h1 class="title-main">チャートを駆けろ！</h1>
+      <p class="quote">相場についていけ。<br><span>― ローソク足の隙間を抜けろ ―</span></p>
       <button class="btn primary" id="btnStart">はじめる</button>
       <div class="title-best">
-        <span>BEST CATCH</span><b id="titleBestCatch">0</b>
-        <span>BEST SCORE</span><b id="titleBestScore">0</b>
+        <span>BEST</span><b id="titleBest">0m</b>
+        <span>ASSET</span><b id="titleAsset">¥1,000,000</b>
       </div>
       <div class="title-foot">
         <button class="btn ghost small" id="btnSound">🔊 SOUND ON</button>
@@ -62,13 +49,12 @@
     <div class="panel">
       <h2 class="screen-title">あそびかた</h2>
       <ul class="howto">
-        <li><b>押している間</b><span>→ 右へ移動</span></li>
-        <li><b>離している間</b><span>← 左へ移動</span></li>
-        <li><b>止まれない</b><span>細かく押して微調整</span></li>
+        <li><b>TAP</b><span>↑ 軽く上昇</span></li>
+        <li><b>何もしない</b><span>↓ ゆっくり落下</span></li>
       </ul>
-      <p class="howto-note">ナイフの<b>「柄」</b>を掴め！<br><span class="danger">刃に触れる／取り逃す</span>と即終了。</p>
-      <button class="btn primary" id="btnTutorialGo">練習してみる</button>
-      <button class="btn ghost small" id="btnTutorialSkip">スキップ</button>
+      <p class="howto-note">ローソク足の隙間を<br><span class="danger">抜けろ！</span></p>
+      <p class="howto-sub">実体もヒゲも当たり判定。画面の上下端もアウト。<br>すれすれで抜けると <b class="gold">RISK BONUS</b></p>
+      <button class="btn primary" id="btnTutorialGo">プレイする</button>
     </div>
   </section>
 
@@ -76,21 +62,16 @@
   <section class="screen hidden" id="scResult">
     <div class="panel">
       <div id="resultNewBest" class="newbest hidden">NEW BEST!</div>
-      <h2 class="gameover">GAME OVER</h2>
-      <p id="resultReason" class="reason">落ちるナイフを掴むな。</p>
+      <h2 class="gameover">MARKET CLOSED</h2>
+      <p id="resultReason" class="reason">相場から振り落とされました。</p>
       <div class="result-main">
-        <div class="rm-label">CATCH</div>
-        <div id="resCatch">0</div>
+        <div class="rm-label">DISTANCE</div>
+        <div id="resDistance">0m</div>
       </div>
       <div class="result-rows">
-        <div><span>SCORE</span><b id="resScore">0</b></div>
-        <div><span>GET率</span><b id="resRate">0%</b></div>
-        <div><span>BEST CATCH</span><b id="resBest">0</b></div>
-      </div>
-      <div class="result-grades">
-        <div class="g-perfect"><span>PERFECT</span><b id="resPerfect">0</b></div>
-        <div class="g-great"><span>GREAT</span><b id="resGreat">0</b></div>
-        <div class="g-good"><span>GOOD</span><b id="resGood">0</b></div>
+        <div><span>BEST</span><b id="resBest">0m</b></div>
+        <div><span>ASSET</span><b id="resAsset">¥1,000,000</b></div>
+        <div><span>RISK BONUS</span><b id="resRisk">0</b></div>
       </div>
       <div id="resultTitleName" class="rank-title">投資初心者</div>
       <div id="resultChar" class="use-char">使用キャラ: にむし</div>
@@ -102,7 +83,7 @@
     </div>
   </section>
 
-  <!-- ===== 復帰 ===== -->
+  <!-- ===== 復帰（バックグラウンド移行など） ===== -->
   <section class="screen hidden" id="scPause">
     <div class="panel slim">
       <h2 class="screen-title">PAUSED</h2>

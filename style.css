@@ -1,7 +1,7 @@
 :root{
-  --bg:#0d1117;
-  --panel:rgba(18,24,34,.94);
-  --line:#233047;
+  --bg:#080d15;
+  --panel:rgba(15,21,32,.94);
+  --line:#22314a;
   --text:#e8eef7;
   --muted:#8ba0bd;
   --up:#2ecc71;
@@ -18,36 +18,27 @@ html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg);}
 body{
   color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;
-  overscroll-behavior:none;
+  overscroll-behavior:none;                 /* Pull to Refresh 誤発火防止 */
   touch-action:none;
   user-select:none;-webkit-user-select:none;
   position:fixed;inset:0;
 }
 #app{position:fixed;inset:0;overflow:hidden;}
-#game{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;}
 
-/* ===== HUD ===== */
-#hud{
-  position:absolute;left:0;right:0;top:0;
-  padding:calc(var(--safe-t) + 10px) calc(var(--safe-r) + 14px) 0 calc(var(--safe-l) + 14px);
-  display:flex;align-items:flex-start;justify-content:space-between;
-  pointer-events:none;z-index:5;
-  text-shadow:0 2px 6px rgba(0,0,0,.65);
+/* ゲーム領域だけブラウザ標準操作を止める（§25） */
+#gameCanvas{
+  position:absolute;inset:0;width:100%;height:100%;display:block;
+  touch-action:none;
+  -webkit-user-select:none;user-select:none;
+  -webkit-touch-callout:none;
 }
-#hudMain{line-height:1;}
-.hud-label{font-size:11px;letter-spacing:.18em;color:var(--muted);font-weight:700;}
-#hudCatch{font-size:52px;font-weight:800;letter-spacing:.02em;font-variant-numeric:tabular-nums;margin-top:2px;}
-#hudCatch.pop{animation:pop .18s ease-out;}
-@keyframes pop{0%{transform:scale(1)}45%{transform:scale(1.22)}100%{transform:scale(1)}}
-#hudSub{text-align:right;font-size:12px;color:var(--muted);line-height:1.7;letter-spacing:.06em;}
-#hudSub b{color:var(--text);font-size:14px;font-variant-numeric:tabular-nums;margin-left:4px;}
 
 /* ===== 画面 ===== */
 .screen{
   position:absolute;inset:0;z-index:10;
   display:flex;align-items:center;justify-content:center;
   padding:calc(var(--safe-t) + 16px) calc(var(--safe-r) + 16px) calc(var(--safe-b) + 16px) calc(var(--safe-l) + 16px);
-  background:radial-gradient(120% 80% at 50% 40%,rgba(13,17,23,.72),rgba(13,17,23,.94));
+  background:radial-gradient(120% 80% at 50% 40%,rgba(8,13,21,.70),rgba(8,13,21,.94));
   backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
   animation:fadein .16s ease-out;
 }
@@ -66,7 +57,7 @@ body{
 .quote{color:var(--muted);font-size:13px;line-height:1.8;margin:10px 0 20px;}
 .quote span{font-size:11px;opacity:.75;}
 .screen-title{font-size:18px;letter-spacing:.16em;margin:0 0 16px;color:var(--text);}
-.gameover{font-size:26px;letter-spacing:.22em;color:var(--down);margin:0 0 6px;}
+.gameover{font-size:24px;letter-spacing:.20em;color:var(--down);margin:0 0 6px;}
 .reason{font-size:12px;color:var(--muted);margin:0 0 16px;}
 
 /* ===== ボタン ===== */
@@ -91,26 +82,27 @@ body{
 /* ===== キャラ選択 ===== */
 #charList{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
 .char-card{
-  background:#131c28;border:2px solid var(--line);border-radius:16px;
+  background:#111a27;border:2px solid var(--line);border-radius:16px;
   padding:10px 8px 12px;cursor:pointer;transition:border-color .12s,background .12s,transform .08s;
   text-align:center;
 }
 .char-card:active{transform:scale(.98);}
-.char-card.sel{border-color:var(--gold);background:#1b2536;box-shadow:0 0 0 3px rgba(255,212,94,.14) inset;}
+.char-card.sel{border-color:var(--gold);background:#1a2536;box-shadow:0 0 0 3px rgba(255,212,94,.14) inset;}
 .char-card canvas{width:78px;height:96px;display:block;margin:0 auto 4px;}
 .cc-name{font-size:15px;font-weight:800;}
 .cc-trait{font-size:11px;color:var(--gold);margin-top:3px;font-weight:700;}
-.cc-desc{font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.45;min-height:2.9em;}
+.cc-desc{font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.45;min-height:2.9em;white-space:pre-line;}
 .cc-diff{font-size:10px;color:var(--muted);margin-top:5px;letter-spacing:.1em;}
-.cc-best{font-size:10px;color:var(--accent);margin-top:3px;font-variant-numeric:tabular-nums;}
 
 /* ===== 操作説明 ===== */
 .howto{list-style:none;margin:0 0 14px;padding:0;text-align:left;}
-.howto li{display:flex;align-items:baseline;gap:10px;padding:9px 12px;background:#131c28;border-radius:12px;margin-bottom:8px;}
-.howto b{font-size:14px;min-width:7.4em;}
-.howto span{font-size:13px;color:var(--muted);}
-.howto-note{font-size:13px;line-height:1.9;margin:0 0 6px;}
-.howto-note .danger{color:var(--down);font-weight:700;}
+.howto li{display:flex;align-items:baseline;gap:10px;padding:11px 14px;background:#111a27;border-radius:12px;margin-bottom:8px;}
+.howto b{font-size:15px;min-width:6.2em;letter-spacing:.06em;}
+.howto span{font-size:14px;color:var(--muted);}
+.howto-note{font-size:15px;line-height:1.9;margin:0 0 8px;}
+.howto-note .danger{color:var(--down);font-weight:800;font-size:18px;}
+.howto-sub{font-size:12px;color:var(--muted);margin:0 0 6px;}
+.gold{color:var(--gold);}
 
 /* ===== リザルト ===== */
 .newbest{
@@ -120,16 +112,11 @@ body{
 @keyframes blink{from{opacity:.45}to{opacity:1}}
 .result-main{margin:6px 0 10px;line-height:1;}
 .rm-label{font-size:11px;letter-spacing:.2em;color:var(--muted);font-weight:700;}
-#resCatch{font-size:64px;font-weight:900;font-variant-numeric:tabular-nums;margin-top:4px;}
-.result-rows{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;}
-.result-rows div{background:#131c28;border-radius:10px;padding:8px 6px;}
+#resDistance{font-size:56px;font-weight:900;font-variant-numeric:tabular-nums;margin-top:4px;}
+.result-rows{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
+.result-rows div{background:#111a27;border-radius:10px;padding:8px 6px;}
 .result-rows span{display:block;font-size:9.5px;color:var(--muted);letter-spacing:.1em;white-space:nowrap;}
-.result-rows b{font-size:17px;font-variant-numeric:tabular-nums;}
-.result-grades{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
-.result-grades div{background:#131c28;border-radius:10px;padding:8px 4px;}
-.result-grades span{display:block;font-size:9.5px;letter-spacing:.1em;color:var(--muted);}
-.result-grades b{font-size:17px;font-variant-numeric:tabular-nums;}
-.g-perfect b{color:var(--gold);} .g-great b{color:var(--accent);} .g-good b{color:var(--text);}
+.result-rows b{font-size:15px;font-variant-numeric:tabular-nums;}
 .rank-title{font-size:15px;font-weight:800;color:var(--gold);margin-bottom:4px;}
 .use-char{font-size:11px;color:var(--muted);margin-bottom:6px;}
 

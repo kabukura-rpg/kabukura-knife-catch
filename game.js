@@ -1,79 +1,121 @@
 'use strict';
 /* =========================================================
-   落ちるナイフを掴め / CATCH THE FALLING KNIFE
-   仕様書 v0.3 準拠 MVP 実装
+   チャートを駆けろ！ / CHART RIDER
+   仕様書 v0.2（chart_rider_game_spec.md ＋ v0.2 変更）
+
+   ・タップで軽く跳ね、離すとゆっくり落下（本家 Flappy Bird 寄りの操作感）
+   ・右から左へ流れる「ローソク足」そのものが障害物。実体とヒゲに当たり判定。
+   ・数値は CONFIG に集約。バランス調整はそこだけを触る。
+   ・x系の値は「画面幅(F.w)の割合」、y系は「画面高(F.h)の割合」。
    ========================================================= */
 
-/* 公開URL。X共有では必ずこの定数だけを使う。
+/* 公開URL。X共有ではこの定数だけを使う（§22）。
    実行中のブラウザURLやローカルパスから共有URLを組み立てないこと。 */
-const GAME_URL = 'https://kabukura-rpg.github.io/kabukura-knife-catch/';
+const GAME_URL = 'https://kabukura-rpg.github.io/chart-rider/';
 
 /* ---------------------------------------------------------
-   1. 設定（暫定値：バランス調整はここだけを触る）
-   x系の値は「画面幅(F.w)の割合」、y系は「画面高(F.h)の割合」
+   1. 設定
 --------------------------------------------------------- */
 const CONFIG = {
   player: {
-    startSpeed: 0.45,        // 画面幅 / 秒
-    maxSpeed: 0.75,          // 画面幅 / 秒
-    accelTime: 0.70,         // 同方向維持で最大速度に達するまでの秒数
-    marginX: 0.085,          // 移動可能域（ミニキャラが端で見切れない幅）
-    turnTime: 0.08,          // 方向転換の慣性（標準キャラ）
-    speedGrowth: 0.004,      // CATCHごとの速度上昇
-    speedGrowthMax: 0.22,
-    wallBehavior: 'stop',    // 端では停止。反射しない
-    visualScale: 0.90,       // 仮キャラ（Canvas描画）の表示サイズ
-    catchFxDuration: 260     // キャッチ成功エフェクトの表示時間（ms・実時間）
+    xRatio: 0.24,          // プレイヤーX位置（画面幅比）
+    gravity: 0.95,         // 画面高 / 秒^2（無操作でも「急落」しない緩やかさ）
+    tapImpulse: -0.42,     // 画面高 / 秒（タップで縦速度をこの値へ上書き）
+    maxFallSpeed: 0.45,    // 落下速度の上限（画面高 / 秒）
+    collisionScale: 0.80,  // 当たり判定 ÷ 見た目（§7：見た目より小さく）
+    visualRadius: 0.0252,  // 当たり判定の基準となる半径（画面高比・胴体まわりの小さな円）
+    bodyDisplay: 0.0505,   // 画面上での「体（胴〜頭）」の直径（画面高比）
+    poseDeadzone: 0.13     // |vy| がこれ未満なら水平飛行の絵（画面高 / 秒）
   },
-  knife: {
-    initialFallSpeed: 0.55,  // 画面高 / 秒
-    maxFallSpeed: 1.20,
-    fallRampCatches: 40,     // 何CATCHで最高速に達するか
-    spawnPreview: 0.15,      // 次ナイフ予告（標準キャラ）
-    minSpawnInterval: 0.22,
-    startInterval: 0.34,
-    intervalDecay: 0.006,
-    /* 次ナイフを「前ナイフの落下時間 × frac」後に出す。
-       1.0未満 = 前のナイフをキャッチする前に次が出現する */
-    gapEarly: 1.15,          // 0〜2 CATCH
-    gapMid: 0.98,            // 3 CATCH
-    gapPreOverlap: 0.78,     // 複数ナイフ解禁直前
-    overlapStart: 0.76,      // 複数ナイフ帯の開始
-    overlapMin: 0.52
+
+  world: {
+    startScrollSpeed: 0.34,   // 画面幅 / 秒
+    maxScrollSpeed: 0.60,
+    speedRampDistance: 1400,  // m
+    pixelsPerMeter: 6         // ワールド1m = 6px（DISTANCE換算）
   },
-  judgement: { perfectRatio: 0.20, greatRatio: 0.60 },
-  score: { GOOD: 100, GREAT: 120, PERFECT: 150 },
-  difficulty: { diagonalUnlock: 6, rotateUnlock: 12, swayUnlock: 20, overlapUnlock: 30 },
-  layout: {
-    handY: 0.70,             // 手（キャッチ判定）の高さ
-    handHalfW: 0.056,        // キャッチ横判定 半幅（画面幅比）
-    catchWidthMultiplier: 0.93, // キャッチ幅の全体倍率（キャラ縮小に合わせて縮小）
-    handHalfH: 0.020,        // キャッチ縦判定 半高
-    bodyGap: 0.085,          // 手から体の上端までの距離
-    dangerHalfW: 0.068,      // 体の危険判定 半幅（見た目の約91%）
-    dangerH: 0.150           // 体の危険判定 高さ
+
+  /* 障害物＝巨大ローソク足。上下1本ずつを対で置き、そのあいだのGAPを抜ける。
+     背景には通常サイズのローソク足チャートを薄く流す（当たり判定なし）。 */
+  candle: {
+    startPitch: 0.62,      // 障害物の間隔（画面幅比）
+    minPitch: 0.48,
+    pitchRampDistance: 1400,
+
+    bodyWidth: 0.085,      // 実体の幅（画面幅比・約33px @390）
+    wickWidth: 0.020,      // ヒゲの幅（画面幅比・約8px @390）
+    minBodySide: 0.075,    // GAPの端から実体の端までの最小長さ（画面高比）
+    bodyFillMin: 0.52,     // GAP端〜画面端のうち実体が占める割合（残りがヒゲ）
+    bodyFillMax: 0.86,
+
+    startGap: 0.235,       // 通り抜けるGAPの高さ（画面高比）
+    minGap: 0.150,
+    gapRampDistance: 1400,
+    routeMargin: 0.12,     // GAP中心が寄れる画面端からの余白（画面高比）
+    hitMargin: 0.005,      // 当たり判定を見た目より内側にする量（画面高比・プレイヤー有利）
+    riskZoneRatio: 0.12,   // GAPの端からこの割合以内で抜けると RISK
+
+    /* 背景チャート（見た目だけ・当たり判定なし） */
+    bgPitch: 0.050,        // 間隔（画面幅比・約20px @390）
+    bgBodyWidth: 0.030,
+    bgWickWidth: 0.007,
+    bgAmp: 0.055,          // 値動きの振れ幅（画面高比）
+    bgAlpha: 0.34
   },
-  geo: {
-    handleLen: 0.050,        // 柄の長さ（画面高比）
-    bladeLen: 0.062,         // 刃の長さ
-    knifeW: 0.021,           // ナイフの幅（画面幅比）
-    bladeHitScale: 0.88      // 刃の当たり判定は見た目の88%（プレイヤー有利）
+
+  difficulty: {
+    volatileUnlock: 200,     // m
+    crashUnlock: 500,
+    narrowUnlock: 900,
+    endlessUnlock: 1400
+  },
+
+  event: {
+    warningSeconds: 0.6,       // 予兆（§10）
+    specialCooldownSeconds: 6.0
+  },
+
+  risk: {
+    points: 100              // GAPの端すれすれを抜けたときの加点
+  },
+
+  score: {
+    startAsset: 1000000,
+    yenPerMeter: 1800,
+    yenPerRiskPoint: 40
+  },
+
+  render: {
+    visionRatio: 0.82        // 標準キャラが見えるチャートの範囲（画面幅比）
   }
 };
 
+const PPM = CONFIG.world.pixelsPerMeter;
+
 /* ---------------------------------------------------------
-   2. キャラクター
+   2. キャラクター（§13）
 --------------------------------------------------------- */
 const CHARACTERS = [
-  { id:'micchan', name:'みっちゃん', trait:'未来予知', desc:'次のナイフの予告が\nいちばん早く見える', diff:'★★☆',
-    preview:0.40, hair:'#f2779b', body:'#ffd7e3', accent:'#ff9ec2', accessory:'star' },
-  { id:'nimushi', name:'にむし', trait:'冷静沈着', desc:'方向転換の慣性が小さく\n切り返しが素早い', diff:'★★★',
-    turnTime:0.04, hair:'#4fbf7a', body:'#c9f0d5', accent:'#7ee0a0', accessory:'antenna' },
-  { id:'nemupan', name:'ねむぱん', trait:'もちもちキャッチ', desc:'柄を掴める判定が\n少し広い（115%）', diff:'★☆☆',
-    catchScale:1.15, hair:'#d9a35b', body:'#ffe9c2', accent:'#ffcf8a', accessory:'sleep' },
-  { id:'queen', name:'女王', trait:'強欲', desc:'PERFECTが広いが\n危険判定も広い', diff:'★★★',
-    perfectRatio:0.30, dangerScale:1.08, hair:'#9b6bff', body:'#e3d4ff', accent:'#c3a3ff', accessory:'crown' }
+  { id:'micchan', name:'みっちゃん', trait:'未来予知', diff:'★★☆',
+    desc:'ローソク足の先が\n少し長く見える',
+    vision:1.00,                                   // 標準0.82 → 約22%先まで見える
+    hair:'#c98f5a', body:'#f6e2cb', accent:'#e6b07a' },
+  { id:'nimushi', name:'にむし', trait:'冷静沈着', diff:'★☆☆',
+    desc:'重力が少し弱く\n細かい修正がしやすい',
+    gravityScale:0.95, impulseScale:0.96,
+    hair:'#4fbf7a', body:'#c9f0d5', accent:'#7ee0a0' },
+  { id:'nemupan', name:'ねむぱん', trait:'もちもちボディ', diff:'★☆☆',
+    desc:'当たり判定が\n少し小さい',
+    collisionScale:0.91,
+    hair:'#d9a35b', body:'#ffe9c2', accent:'#ffcf8a' },
+  { id:'queen', name:'女王', trait:'強欲', diff:'★★★',
+    desc:'RISK BONUS ×1.5\n判定は少し大きい',
+    riskMul:1.5, collisionScale:1.06,
+    hair:'#9b6bff', body:'#e3d4ff', accent:'#c3a3ff' }
 ];
+const CHAR_DEFAULT = { vision:CONFIG.render.visionRatio, gravityScale:1, impulseScale:1,
+                       collisionScale:1, riskMul:1 };
+CHARACTERS.forEach(c => { for (const k in CHAR_DEFAULT) if (c[k] === undefined) c[k] = CHAR_DEFAULT[k]; });
 const charById = id => CHARACTERS.find(c => c.id === id) || CHARACTERS[0];
 
 /* ---------------------------------------------------------
@@ -81,137 +123,152 @@ const charById = id => CHARACTERS.find(c => c.id === id) || CHARACTERS[0];
 
    ・ファイル名は assets/ に実在する名前をそのまま使う
      （みっちゃん=micchan / にむし=nimushi / ねむぱん=nempan / 女王=ponkotsu）
-   ・ax, ay は「画像内のどこをキャッチ位置に合わせるか」を 0〜1 で指定する。
-     みっちゃん・女王は杖先、ねむぱんは両肉球の中間。
-     ゲーム側の座標・当たり判定はこの値の影響を受けない（画像を座標へ合わせるだけ）。
-   ・footY は通常画像の足元の位置（0〜1）。表示倍率はこれだけで決まり、
-     Get / Miss も同じ倍率で描くのでポーズが変わってもサイズは変化しない。
-   ・offsetX（画面幅比）/ offsetY（画面高比）は微調整用。
-   ・画像が無い / 読めない場合は 通常画像 → Canvas描画 の順に自動フォールバックする。
-   ・プレイ中に使うのは normal と miss だけ（プリロード対象も SPRITE_PRELOAD の2つ）。
-     get は将来のリザルト演出用に定義だけ残してある（読み込みはしない）。
-     キャッチ成功はキャラを差し替えず、通常画像の上にエフェクトを重ねて見せる。
-
-   新しいキャラの画像を追加するとき（例: にむし）:
-     assets/ に nimushi.png / nimushiGet.png / nimushiMiss.png を置き、
-     下の nimushi の行のコメントを外して ax・ay・footY を合わせるだけでよい。
+   ・4キャラとも up / go / down / miss を持ち、velocityY で切り替える。
+   ・ax, ay は各画像の「体（胴〜顔）の中心」を 0〜1 で指定するアンカー。
+     しっぽ・杖・マント・タピオカなどの装飾は含めず、本人の体だけを見る。
+   ・bodyD は「その体が画像高の何割か」。表示倍率はこれだけで決まるので、
+     構図や余白が違ってもキャラの大きさは揃う。
+   ・当たり判定は CONFIG.player.visualRadius の円だけで決まり、画像には一切依存しない
+     （装飾は判定に含まれない）。
+   ・画像が無い / 読めない場合は POSE_FALLBACK → Canvas描画 の順に自動で代替する。
 --------------------------------------------------------- */
 const SPRITES = {
-  nimushi: {
-    footY: 0.985, offsetX: 0, offsetY: 0,
-    normal: { file:'nimushi.png',     ax:0.490, ay:0.075 },  // 両手のひらの中間
-    get:    { file:'nimushiGet.png',  ax:0.490, ay:0.075 },  // 未使用（将来のリザルト演出用）
-    miss:   { file:'nimushiMiss.png', ax:0.490, ay:0.075 }
-  },
+  /* 一覧の画像は assets/ に実在するファイル名をそのまま使う。
+     normal は選択画面のカード用（＆飛行画像が読めないときの保険）。 */
   micchan: {
-    footY: 0.985, offsetX: 0, offsetY: 0,
-    normal: { file:'micchan.png',     ax:0.310, ay:0.060 },  // 杖先（葉の付け根）
-    get:    { file:'micchanGet.png',  ax:0.385, ay:0.075 },
-    miss:   { file:'micchanMiss.png', ax:0.500, ay:0.105 }   // 転倒ポーズは中央基準
-  },
+    normal:{ file:'micchan.png',      ax:0.50, ay:0.62, bodyD:0.45 },
+    up:    { file:'micchanUp.png',    ax:0.63, ay:0.44, bodyD:0.42 },
+    go:    { file:'micchanGo.png',    ax:0.70, ay:0.47, bodyD:0.40 },
+    down:  { file:'micchanDown.png',  ax:0.59, ay:0.53, bodyD:0.42 },
+    miss:  { file:'micchanMiss.png',  ax:0.53, ay:0.45, bodyD:0.42 } },
+  nimushi: {
+    normal:{ file:'nimushi.png',      ax:0.50, ay:0.55, bodyD:0.45 },
+    up:    { file:'nimushiUp.png',    ax:0.61, ay:0.33, bodyD:0.40 },
+    go:    { file:'nimushiGo.png',    ax:0.61, ay:0.33, bodyD:0.40 },
+    /* nimushiDown.png はまだ無いので go で代用される。
+       ファイルを置けば自動的にこちらが使われる。 */
+    down:  { file:'nimushiDown.png',  ax:0.61, ay:0.36, bodyD:0.40 },
+    miss:  { file:'nimushiMiss.png',  ax:0.65, ay:0.42, bodyD:0.40 } },
   nemupan: {
-    footY: 0.950, offsetX: 0, offsetY: 0,
-    normal: { file:'nempan.png',      ax:0.490, ay:0.130 },  // 両肉球の中間
-    get:    { file:'nempanGet.png',   ax:0.430, ay:0.130 },  // ナイフを掴んだ肉球
-    miss:   { file:'nempanMiss.png',  ax:0.500, ay:0.180 }
-  },
+    normal:{ file:'nempan.png',       ax:0.50, ay:0.58, bodyD:0.45 },
+    up:    { file:'nempanUp.png',     ax:0.59, ay:0.48, bodyD:0.40 },
+    go:    { file:'nempanGo.png',     ax:0.71, ay:0.51, bodyD:0.36 },
+    down:  { file:'nempanDown.png',   ax:0.65, ay:0.58, bodyD:0.38 },
+    miss:  { file:'nempanMiss.png',   ax:0.76, ay:0.64, bodyD:0.36 } },
   queen: {
-    footY: 0.985, offsetX: 0, offsetY: 0,
-    normal: { file:'ponkotsu.png',    ax:0.535, ay:0.055 },  // 杖先（宝珠）
-    get:    { file:'ponkotsuGet.png', ax:0.600, ay:0.100 },
-    miss:   { file:'ponkotsuMiss.png',ax:0.470, ay:0.070 }
-  }
+    normal:{ file:'ponkotsu.png',     ax:0.50, ay:0.57, bodyD:0.45 },
+    up:    { file:'ponkotsuUp.png',   ax:0.59, ay:0.40, bodyD:0.45 },
+    go:    { file:'ponkotsuGo.png',   ax:0.74, ay:0.50, bodyD:0.42 },
+    down:  { file:'ponkotsuDown.png', ax:0.57, ay:0.72, bodyD:0.40 },
+    miss:  { file:'ponkotsuMiss.png', ax:0.63, ay:0.62, bodyD:0.42 } }
 };
 
-/* プレイ中に実際に使うポーズだけ先読みする（get は未使用なので読み込まない） */
-const SPRITE_PRELOAD = ['normal', 'miss'];
+/* ポーズが無い / 画像が読めないときの代替順 */
+const POSE_FALLBACK = {
+  up:  ['up', 'go', 'normal'],
+  go:  ['go', 'up', 'normal'],
+  down:['down', 'go', 'normal'],
+  miss:['miss', 'normal'],
+  normal:['normal']
+};
 
-/* 画像ローダー。タイトル表示前に全ポーズを先読みするので、
-   キャッチした瞬間に Get 画像が未読込で消える、ということが起きない。 */
+/* 上昇 / 水平 / 下降の切り替えが細かくバタつかないための最短保持時間 */
+const POSE_HOLD = 0.10;   // 秒
+
+/* 画像を差し替えたらこの数字を増やす（ブラウザのキャッシュ対策） */
+const ASSET_VERSION = 2;
+
 const Sprites = {
-  map:{}, pending:0, done:0,
+  map:{}, pending:0,
+  /* プレイ中に使う全ポーズをタイトル表示前に先読みする（切り替えで読み込み待ちを出さない） */
   preload() {
     Object.keys(SPRITES).forEach(id => {
-      const sp = SPRITES[id];
-      SPRITE_PRELOAD.forEach(k => { if (sp[k] && sp[k].file) this.load(sp[k].file); });
+      ['normal','up','go','down','miss'].forEach(k => {
+        const part = SPRITES[id][k];
+        if (part) this.load(part.file);
+      });
     });
   },
   load(file) {
-    if (this.map[file]) return;
+    if (!file || this.map[file]) return;
     const e = { img:new Image(), ok:false };
     this.map[file] = e; this.pending++;
-    e.img.onload  = () => { e.ok = e.img.naturalWidth > 0; this.done++; onSpriteLoaded(); };
-    e.img.onerror = () => { e.ok = false; this.done++; };   // 未提供でもゲームは止めない
-    e.img.src = 'assets/' + file;
+    e.img.onload  = () => { e.ok = e.img.naturalWidth > 0; this.pending--; onSpriteLoaded(); };
+    e.img.onerror = () => { e.ok = false; this.pending--; };   // 画像が無くてもゲームは止めない
+    e.img.src = 'assets/' + file + '?v=' + ASSET_VERSION;
   },
-  get(file) { const e = file && this.map[file]; return e && e.ok ? e.img : null; },
-  ready(id) { const sp = SPRITES[id]; return !!(sp && this.get(sp.normal.file)); }
+  get(file) { const e = file && this.map[file]; return e && e.ok ? e.img : null; }
 };
 
-/* 表示する画像を決める。
-   プレイ中は常に通常画像、ゲームオーバー時だけ Miss 画像。
-   （キャッチ成功はキャラを差し替えずエフェクトで見せる）
-   miss が無ければ通常画像へ、通常画像も無ければ null で Canvas 描画へフォールバック。 */
+/* 表示する画像を決める。用意が無いポーズは POSE_FALLBACK の順に代替する。 */
 function spriteFor(charId, pose) {
   const sp = SPRITES[charId];
   if (!sp) return null;
-  const key = pose === 3 ? 'miss' : 'normal';
-  let part = sp[key] || sp.normal;
-  let img = Sprites.get(part.file);
-  if (!img) { part = sp.normal; img = Sprites.get(part.file); }
-  return img ? { img, ax:part.ax, ay:part.ay, sp } : null;
+  const order = POSE_FALLBACK[pose] || POSE_FALLBACK.normal;
+  for (const k of order) {
+    const part = sp[k];
+    if (!part) continue;
+    const img = Sprites.get(part.file);
+    if (img) return { img, part };
+  }
+  return null;
 }
 
+/* velocityY から現在のポーズ名を決める。
+   衝突後は必ず miss（velocityY による切り替えで上書きしない）。
+   水平判定にはデッドゾーンを設け、上下の境目で絵がバタつかないようにする。 */
+function poseName() {
+  const p = G.player;
+  if (p.miss) return 'miss';
+  if (G.state !== GAME_STATE.PLAYING) return 'go';
+  const dead = CONFIG.player.poseDeadzone * F.h;
+  if (p.vy < -dead) return 'up';
+  if (p.vy >  dead) return 'down';
+  return 'go';
+}
 
+/* 称号（DISTANCEに対して） */
 const RANK_TITLES = [
-  [50, '市場の狂人'], [30, '落ちるナイフ職人'], [20, '逆張り投資家'],
-  [10, '握力強者'], [5, 'ナイフ見習い'], [0, '投資初心者']
+  [1400, '相場の支配者'], [900, 'ヘッジファンド'], [500, '専業トレーダー'],
+  [200, '兼業投資家'], [80, '新規参入者'], [0, '投資初心者']
 ];
-const rankTitle = c => (RANK_TITLES.find(r => c >= r[0]) || RANK_TITLES[5])[1];
-
-/* GET率 = GREAT + PERFECT を出した割合。
-   「CATCH数 ÷ 全試行数」だとCATCH数だけで決まってしまうため、精度の指標にする。 */
-function getRate() {
-  if (!G.catches) return 0;
-  return Math.round(((G.grades.GREAT + G.grades.PERFECT) / G.catches) * 100);
-}
+const rankTitle = m => (RANK_TITLES.find(r => m >= r[0]) || RANK_TITLES[5])[1];
 
 const OVER_QUOTES = {
-  blade: ['落ちるナイフを掴むな。', '無理な逆張りは怪我のもと。', '刃に触れた。損切りは早めに。'],
-  drop:  ['落ちるナイフを掴むな。', '取り逃した。次の下落を待とう。', '手が届かなかった。']
+  candle:  ['ローソク足に弾かれました。', '実体に阻まれた。', '相場は甘くない。'],
+  ground:  ['底が抜けました。', '奈落まで落ちた。', '狼狽売り。'],
+  ceiling: ['天井を突き抜けました。', '上がり過ぎには気をつけろ。', '高値掴み。']
 };
 
 /* ---------------------------------------------------------
-   3. セーブデータ（localStorage）
+   3. セーブデータ（§29 localStorage）
 --------------------------------------------------------- */
-const SAVE_KEY = 'falling_knife_save_v1';
-function defaultSave() {
-  const chars = {};
-  CHARACTERS.forEach(c => chars[c.id] = { catch:0, score:0 });
-  return { version:1, tutorialSeen:false, lastCharacter:'nimushi', sound:true,
-           best:{ catch:0, score:0 }, characters:chars };
-}
+const SAVE_KEY = 'chart_rider_save_v1';
+const defaultSave = () => ({
+  version:1,
+  bestDistance:0,
+  bestAsset:0,
+  selectedCharacter:'nemupan',
+  tutorialSeen:false,
+  soundEnabled:true
+});
 let SAVE = defaultSave();
 function loadSave() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return;
     const d = JSON.parse(raw);
-    if (!d || typeof d !== 'object') return;
-    SAVE = Object.assign(defaultSave(), d);
-    SAVE.best = Object.assign({ catch:0, score:0 }, d.best || {});
-    SAVE.characters = Object.assign(defaultSave().characters, d.characters || {});
+    if (d && typeof d === 'object') SAVE = Object.assign(defaultSave(), d);
   } catch (e) { SAVE = defaultSave(); }
 }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(SAVE)); } catch (e) {} }
 loadSave();
 
 /* ---------------------------------------------------------
-   4. サウンド（WebAudio・アセット不要）
+   4. サウンド（§23 WebAudio・音源アセット不要）
 --------------------------------------------------------- */
 const Sound = {
-  ac:null, master:null, enabled:SAVE.sound !== false,
-  bgmOn:false, bgmNext:0, bgmStep:0,
+  ac:null, master:null, enabled:SAVE.soundEnabled !== false,
   ensure() {
     if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -222,7 +279,7 @@ const Sound = {
     this.master.connect(this.ac.destination);
   },
   setEnabled(on) {
-    this.enabled = on; SAVE.sound = on; persist();
+    this.enabled = on; SAVE.soundEnabled = on; persist();
     if (this.master) this.master.gain.value = on ? 0.9 : 0;
   },
   tone(freq, dur, type, vol, delay, slideTo) {
@@ -238,7 +295,7 @@ const Sound = {
   },
   noise(dur, vol, freq) {
     if (!this.ac || !this.enabled) return;
-    const n = Math.floor(this.ac.sampleRate * dur);
+    const n = Math.max(1, Math.floor(this.ac.sampleRate * dur));
     const buf = this.ac.createBuffer(1, n, this.ac.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2);
     const src = this.ac.createBufferSource(); src.buffer = buf;
@@ -246,50 +303,34 @@ const Sound = {
     const g = this.ac.createGain(); g.gain.value = vol || 0.3;
     src.connect(f); f.connect(g); g.connect(this.master); src.start();
   },
-  catchSE(grade, combo) {
-    if (grade === 'PERFECT') {
-      const step = Math.min(7, Math.floor(combo / 3));
-      const base = 880 * Math.pow(2, step / 12);
-      this.tone(base, 0.09, 'square', 0.15);
-      this.tone(base * 1.5, 0.13, 'triangle', 0.13, 0.03);
-    } else if (grade === 'GREAT') {
-      this.tone(700, 0.08, 'square', 0.13);
-      this.tone(950, 0.08, 'triangle', 0.08, 0.02);
-    } else {
-      this.tone(520, 0.07, 'square', 0.11);
-    }
-    this.noise(0.05, 0.10, 2600);
-  },
-  bladeSE() { this.tone(180, 0.28, 'sawtooth', 0.22, 0, 60); this.noise(0.3, 0.35, 700); },
-  dropSE()  { this.tone(120, 0.35, 'sine', 0.22, 0, 55); this.noise(0.22, 0.30, 400); },
-  countSE(last) { this.tone(last ? 900 : 560, last ? 0.2 : 0.1, 'square', 0.14); },
-  newBestSE() { [0,0.09,0.18].forEach((d,i)=>this.tone(700*Math.pow(2,i*2/12+i*0.05),0.16,'triangle',0.14,d)); },
-  /* --- 簡易BGM（テンポは難易度で上昇） --- */
-  startBgm() { if (!this.ac) return; this.bgmOn = true; this.bgmNext = this.ac.currentTime + 0.05; this.bgmStep = 0; },
-  stopBgm() { this.bgmOn = false; },
-  tickBgm(catches) {
-    if (!this.bgmOn || !this.ac || !this.enabled) return;
-    const bpm = 104 + Math.min(46, catches * 1.1);
-    const spb = 60 / bpm / 2;
-    const bass = [0, 0, 7, 0, 5, 5, 3, 0];
-    while (this.bgmNext < this.ac.currentTime + 0.25) {
-      const t = this.bgmNext, s = this.bgmStep % 8;
-      const f = 98 * Math.pow(2, bass[s] / 12);
-      this.tone(f, spb * 0.9, 'triangle', 0.055, t - this.ac.currentTime);
-      if (s % 2 === 0) this.noise(0.03, 0.035, 5000);
-      if (catches >= 20 && (s === 2 || s === 6))
-        this.tone(f * 4, spb * 0.5, 'square', 0.028, t - this.ac.currentTime);
-      this.bgmNext += spb; this.bgmStep++;
-    }
-  }
+  tap()      { this.tone(520, 0.07, 'square', 0.09, 0, 760); },
+  pass()     { this.tone(700, 0.05, 'triangle', 0.07); },
+  risk()     { this.tone(880, 0.08, 'triangle', 0.13); this.tone(1320, 0.10, 'triangle', 0.10, 0.05); },
+  warning()  { this.tone(320, 0.12, 'sawtooth', 0.12); this.tone(320, 0.12, 'sawtooth', 0.12, 0.16); },
+  crash()    { this.tone(220, 0.40, 'sawtooth', 0.16, 0, 70);  this.noise(0.35, 0.22, 500); },
+  rally()    { this.tone(330, 0.35, 'square',  0.13, 0, 990); },
+  over()     { this.tone(180, 0.30, 'sawtooth', 0.22, 0, 60); this.noise(0.30, 0.32, 700); },
+  newBest()  { [0,0.09,0.18].forEach((d,i) => this.tone(660 * Math.pow(2, i * 4 / 12), 0.17, 'triangle', 0.14, d)); }
 };
 
 /* ---------------------------------------------------------
-   5. キャンバス・フィールド
+   5. キャンバス・フィールド（§26 論理座標＋DPR対応）
 --------------------------------------------------------- */
-const cv = document.getElementById('game');
+const cv = document.getElementById('gameCanvas');
 const ctx = cv.getContext('2d', { alpha:false });
 const F = { w:0, h:0, ox:0, oy:0, vw:0, vh:0, dpr:1 };
+
+/* Safe Area（ノッチ / Dynamic Island）を CSS から読む（§25） */
+const safeProbe = document.createElement('div');
+safeProbe.style.cssText =
+  'position:absolute;visibility:hidden;pointer-events:none;' +
+  'padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);';
+document.body.appendChild(safeProbe);
+let SAFE = { t:0, b:0 };
+function readSafeInsets() {                    // レイアウト読み取りは毎フレームやらない
+  const s = getComputedStyle(safeProbe);
+  SAFE = { t: parseFloat(s.paddingTop) || 0, b: parseFloat(s.paddingBottom) || 0 };
+}
 
 function resize() {
   const vw = Math.max(1, window.innerWidth), vh = Math.max(1, window.innerHeight);
@@ -297,977 +338,934 @@ function resize() {
   cv.width = Math.round(vw * dpr); cv.height = Math.round(vh * dpr);
   cv.style.width = vw + 'px'; cv.style.height = vh + 'px';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  let fh = vh, fw = fh * 9 / 16;
-  if (fw > vw) { fw = vw; fh = Math.min(vh, fw * 16 / 9); }
-  const old = F.w;
-  F.w = fw; F.h = fh; F.ox = (vw - fw) / 2; F.oy = (vh - fh) * 0.78; F.vw = vw; F.vh = vh; F.dpr = dpr;
-  if (old > 0 && G.player) G.player.x *= F.w / old;   // 画面サイズ変化に追従
-  const hudEl = document.getElementById('hud');        // HUDをプレイ領域の幅に合わせる
-  if (hudEl) { hudEl.style.left = F.ox + 'px'; hudEl.style.right = F.ox + 'px'; }
+  /* 基準は 9:16。実画面が縦長ならその分だけ広く使い、極端な比率だけ余白にする。 */
+  let fw = vw, fh = vh;
+  const MAX_TALL = 19.5 / 9, MAX_WIDE = 14 / 9;
+  if (fh / fw > MAX_TALL) fh = fw * MAX_TALL;        // 縦に長すぎる端末 → 上下に余白
+  else if (fh / fw < MAX_WIDE) fw = fh * 9 / 16;     // PCなど横長 → 左右に余白（9:16の縦画面）
+  const oldH = F.h;
+  F.w = fw; F.h = fh; F.ox = (vw - fw) / 2; F.oy = (vh - fh) / 2; F.vw = vw; F.vh = vh; F.dpr = dpr;
+  readSafeInsets();
+  /* 画面サイズが変わってもプレイ中の位置関係を保つ */
+  if (oldH > 0 && oldH !== F.h) {
+    const k = F.h / oldH;
+    if (G.player) { G.player.y *= k; G.player.vy *= k; }
+    Obstacles.rescaleY(k);
+    BgChart.rescaleY(k);
+  }
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 
 /* ---------------------------------------------------------
-   6. 幾何ヘルパ
+   6. ヘルパ
 --------------------------------------------------------- */
-function segAabb(x1, y1, x2, y2, minx, miny, maxx, maxy) {
-  const dx = x2 - x1, dy = y2 - y1;
-  let t0 = 0, t1 = 1;
-  const p = [-dx, dx, -dy, dy];
-  const q = [x1 - minx, maxx - x1, y1 - miny, maxy - y1];
-  for (let i = 0; i < 4; i++) {
-    if (p[i] === 0) { if (q[i] < 0) return false; }
-    else {
-      const r = q[i] / p[i];
-      if (p[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
-      else { if (r < t0) return false; if (r < t1) t1 = r; }
-    }
-  }
-  return true;
-}
-function closestOnSeg(px, py, x1, y1, x2, y2) {
-  const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy;
-  if (l2 === 0) return { x:x1, y:y1 };
-  let t = ((px - x1) * dx + (py - y1) * dy) / l2;
-  t = Math.max(0, Math.min(1, t));
-  return { x:x1 + dx * t, y:y1 + dy * t };
-}
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const rand = (a, b) => a + Math.random() * (b - a);
+const lerp = (a, b, t) => a + (b - a) * t;
+const pick = arr => arr[(Math.random() * arr.length) | 0];
+const fmt = n => Math.floor(n).toLocaleString('en-US');
+const yen = n => '¥' + fmt(n);
+
+/* 難易度カーブ（§9）：距離[m] → 各パラメータ */
+function scrollSpeed(m) {
+  const t = clamp(m / CONFIG.world.speedRampDistance, 0, 1);
+  return lerp(CONFIG.world.startScrollSpeed, CONFIG.world.maxScrollSpeed, t) * F.w;
+}
+function gapHeight(m) {
+  const C = CONFIG.candle;
+  const t = clamp(m / C.gapRampDistance, 0, 1);
+  return lerp(C.startGap, C.minGap, t) * F.h;
+}
+function pitch(m) {
+  const C = CONFIG.candle;
+  const t = clamp(m / C.pitchRampDistance, 0, 1);
+  return lerp(C.startPitch, C.minPitch, t) * F.w;
+}
+/* GAPの上下位置の振れ幅（画面高比） */
+function volatility(m) {
+  const D = CONFIG.difficulty;
+  if (m < 100) return 0.05;
+  if (m < D.volatileUnlock) return lerp(0.07, 0.11, (m - 100) / (D.volatileUnlock - 100));
+  if (m < D.crashUnlock)    return lerp(0.11, 0.16, (m - D.volatileUnlock) / (D.crashUnlock - D.volatileUnlock));
+  if (m < D.narrowUnlock)   return lerp(0.16, 0.21, (m - D.crashUnlock) / (D.narrowUnlock - D.crashUnlock));
+  if (m < D.endlessUnlock)  return lerp(0.21, 0.25, (m - D.narrowUnlock) / (D.endlessUnlock - D.narrowUnlock));
+  return 0.26;
+}
+function phaseName(m) {
+  const D = CONFIG.difficulty;
+  if (m < D.volatileUnlock) return 'EASY';
+  if (m < D.crashUnlock)    return 'NORMAL';
+  if (m < D.narrowUnlock)   return 'VOLATILE';
+  if (m < D.endlessUnlock)  return 'CRASH ZONE';
+  return 'ENDLESS';
+}
+
+const gravity     = () => CONFIG.player.gravity * F.h * G.char.gravityScale;
+const tapImpulse  = () => CONFIG.player.tapImpulse * F.h * G.char.impulseScale;
+const maxFall     = () => CONFIG.player.maxFallSpeed * F.h;
+const playerX     = () => F.w * CONFIG.player.xRatio;
+const visualR     = () => CONFIG.player.visualRadius * F.h;
+const collisionR  = () => visualR() * CONFIG.player.collisionScale * G.char.collisionScale;
+const visionX     = () => F.w * G.char.vision;
 
 /* ---------------------------------------------------------
-   7. ゲーム状態
+   7. 障害物（巨大ローソク足）と背景チャート
+
+   ・Obstacles … 上下1本ずつの巨大ローソク足を対で置き、あいだのGAPを抜けさせる。
+     1本は「GAP側のヒゲ → 実体 → 画面端まで伸びるヒゲ」で構成し、
+     始値は前の足の終値と一致させて、連続した相場に見せる。
+     GAPの高低差は必ず「次の足までにタップ操作で到達できる範囲」へ丸める（§8.2 / §34）。
+   ・BgChart … 背景に流す通常サイズのローソク足チャート。見た目だけで当たり判定は持たない。
+     前景の巨大ローソク足と同じ値動き（GAP中心）のまわりを歩かせ、
+     同じ相場を拡大しているように見せる。
 --------------------------------------------------------- */
-const G = {
-  state:'title',           // title | select | tutorial | count | play | over | pause
-  time:0, last:0,
-  char:charById(SAVE.lastCharacter),
-  player:{ x:0, v:0, dir:-1, dirTime:0, pose:0, poseT:0, pop:0, popMax:1 },
-  knives:[], pending:null, spawnAt:null, lastLanding:-1, lastGap:0,
-  catches:0, score:0, combo:0, maxCombo:0,
-  grades:{ GOOD:0, GREAT:0, PERFECT:0 },
-  practice:false, practiceDone:false,
-  countT:0, countLen:3.2, countShown:-1,
-  overT:0, overKind:'drop', overQuote:'',
-  hitstop:0, shake:0, flash:0, crash:false, crashT:0,
-  particles:[], floats:[], rings:[], banner:null, bannerT:0,
-  bestFlag:{ near:false, tie:false, neu:false },
-  input:new Set(), keyDown:false,
-  resumeState:null
-};
-const pressed = () => G.input.size > 0 || G.keyDown;
+const bodyW  = () => CONFIG.candle.bodyWidth * F.w;
+const wickW  = () => CONFIG.candle.wickWidth * F.w;
 
-/* --- キャラ特性の反映 --- */
-function turnTime()      { return G.char.turnTime || CONFIG.player.turnTime; }
-function previewTime()   { return G.char.preview  || CONFIG.knife.spawnPreview; }
-function catchHalfW()    { return CONFIG.layout.handHalfW * CONFIG.layout.catchWidthMultiplier * (G.char.catchScale || 1) * F.w; }
-function dangerHalfW()   { return CONFIG.layout.dangerHalfW * (G.char.dangerScale || 1) * F.w; }
-function perfectRatio()  { return G.char.perfectRatio || CONFIG.judgement.perfectRatio; }
-function handY()         { return CONFIG.layout.handY * F.h; }
-function floorY()        { return handY() + 0.237 * F.h * CONFIG.player.visualScale; }
-function bodyTop()       { return handY() + CONFIG.layout.bodyGap * F.h; }
+const Obstacles = {
+  list:[], nextX:0, lastGapY:0, prevClose:0,
+  trendDir:0, trendLeft:0,
+  eventDir:0, eventLeft:0, lastEventX:-1e9,
 
-function phaseOf(c) {
-  if (c < 3) return 1;   // 操作確認（直線のみ・中央付近）
-  if (c < 6) return 2;   // 速度上昇・左右全域
-  if (c < 12) return 3;  // 斜め
-  if (c < 20) return 4;  // 回転
-  if (c < 30) return 5;  // 揺れ・高速
-  return 6;              // 複数ナイフ
-}
-function fallSpeed() {
-  const K = CONFIG.knife;
-  const t = Math.min(1, G.catches / K.fallRampCatches);
-  return (K.initialFallSpeed + (K.maxFallSpeed - K.initialFallSpeed) * t) * F.h;
-}
-function playerMaxSpeed() {
-  const P = CONFIG.player;
-  const s = 1 + Math.min(P.speedGrowthMax, G.catches * P.speedGrowth);
-  return { base:P.startSpeed * s * F.w, max:P.maxSpeed * s * F.w };
-}
-function spawnInterval() {
-  const K = CONFIG.knife;
-  return Math.max(K.minSpawnInterval, K.startInterval - G.catches * K.intervalDecay);
-}
-/* 次のナイフを出すまでの待ち時間。
-   前ナイフの落下時間に対する比率で決め、CATCHが進むほど詰めていく。
-   比率が1.0を下回ると「前のナイフをキャッチする前に次が出る」状態になる。 */
-function nextSpawnDelay(k) {
-  const K = CONFIG.knife, D = CONFIG.difficulty, c = G.catches;
-  let frac;
-  if (c < 3) frac = K.gapEarly;
-  else if (c < D.overlapUnlock) {
-    const t = Math.min(1, (c - 3) / (D.overlapUnlock - 3));
-    frac = K.gapMid + (K.gapPreOverlap - K.gapMid) * t;
-  } else {
-    const t = Math.min(1, (c - D.overlapUnlock) / 25);
-    frac = K.overlapStart + (K.overlapMin - K.overlapStart) * t;
-  }
-  return Math.max(k.fallTime * frac, K.minSpawnInterval + previewTime());
-}
+  reset() {
+    this.list.length = 0;
+    this.lastGapY = F.h * 0.5;
+    this.prevClose = F.h * 0.5 + gapHeight(0) / 2 + F.h * 0.12;
+    this.trendDir = 0; this.trendLeft = 0;
+    this.eventDir = 0; this.eventLeft = 0; this.lastEventX = -1e9;
+    this.nextX = F.w * 0.55;                 // 1本目が開始時から視界に入る位置
+    this.ensure(F.w * 1.8);
+  },
 
-/* ---------------------------------------------------------
-   8. ゲーム開始・リセット
---------------------------------------------------------- */
-function resetRun(practice) {
-  G.knives.length = 0; G.particles.length = 0; G.floats.length = 0; G.rings.length = 0;
-  G.pending = null; G.spawnAt = null; G.lastLanding = -1; G.lastGap = 0;
-  G.catches = 0; G.score = 0; G.combo = 0; G.maxCombo = 0;
-  G.grades = { GOOD:0, GREAT:0, PERFECT:0 };
-  G.practice = !!practice; G.practiceDone = false;
-  G.hitstop = 0; G.shake = 0; G.flash = 0; G.crash = false; G.crashT = 0;
-  G.banner = null; G.overT = 0;
-  G.bestFlag = { near:false, tie:false, neu:false };
-  G.player.x = F.w * 0.5; G.player.v = 0; G.player.dir = -1; G.player.dirTime = 0;
-  G.player.pose = 0; G.player.poseT = 0; G.player.pop = 0;
-  updateHud();
-}
-function startCountdown(len) {
-  G.state = 'count'; G.countT = 0; G.countLen = len; G.countShown = -1;
-  hud.classList.remove('hidden');
-}
-function beginPlay() {
-  G.state = 'play';
-  G.spawnAt = G.time + (G.practice ? 0.35 : 0.45) + previewTime();
-  Sound.ensure(); Sound.startBgm();
-}
+  ensure(untilX) {
+    let guard = 0;
+    while (this.nextX < untilX && guard++ < 60) {
+      this.list.push(this.plan(this.nextX));
+      this.nextX += pitch(Math.max(0, this.nextX) / PPM);
+    }
+  },
 
-/* ---------------------------------------------------------
-   9. ナイフ生成
---------------------------------------------------------- */
-function pickType() {
-  const c = G.catches, D = CONFIG.difficulty;
-  if (G.practice || c < 2) return 'straight';
-  const pool = ['straight', 'straight', 'straight'];
-  if (c >= D.diagonalUnlock) pool.push('diagonal', 'diagonal');
-  if (c >= D.rotateUnlock)   pool.push('rotate', 'rotate');
-  if (c >= D.swayUnlock)     pool.push('sway', 'fast');
-  if (c >= D.overlapUnlock)  pool.push('rotate', 'sway', 'diagonal', 'fast');
-  return pool[Math.floor(Math.random() * pool.length)];
-}
+  trim(minX) {
+    let n = 0;
+    while (n < this.list.length && this.list[n].x < minX) n++;
+    if (n > 0) this.list.splice(0, n);
+  },
 
-/* 現在の速度・入力方向・慣性・加速を考慮して、t秒で sign 方向へ進める距離を求める。
-   updatePlayer と同じ運動モデルを数値積分するので、実際の挙動とズレない。 */
-function reachDist(t, sign) {
-  const P = CONFIG.player, sp = playerMaxSpeed();
-  const rate = (2 * sp.max) / turnTime();
-  let v = G.player.v, x = 0;
-  let dirTime = (G.player.dir === sign) ? G.player.dirTime : 0;   // 逆向きなら加速はやり直し
-  const steps = 16, dt = t / steps;
-  for (let i = 0; i < steps; i++) {
-    dirTime += dt;
-    const target = sign * (sp.base + (sp.max - sp.base) * Math.min(1, dirTime / P.accelTime));
-    if (v < target) v = Math.min(target, v + rate * dt);
-    else            v = Math.max(target, v - rate * dt);
-    x += v * dt;
-  }
-  return Math.max(0, sign * x);
-}
+  rescaleY(k) {
+    this.lastGapY *= k; this.prevClose *= k;
+    for (const o of this.list) {
+      o.gapY *= k; o.gapH *= k;
+      o.bodyTop *= k; o.bodyBot *= k; o.high *= k; o.low *= k;
+      if (o.minEdge < 1e8) o.minEdge *= k;
+    }
+  },
 
-/* 「移動に必要な平均速度 ÷ 最大速度」の上限。CATCHが進むほど忙しくする（§43） */
-function travelRatioCap(c) {
-  if (c < 5)  return 0.42;                                  // 1〜5 CATCH: 操作に慣れる
-  if (c < 20) return 0.42 + (0.58 - 0.42) * ((c - 5) / 15); // 6〜19 CATCH: 徐々に増やす
-  if (c < 40) return 0.58 + (0.64 - 0.58) * ((c - 20) / 20);// 20〜39 CATCH: 55〜60%帯
-  return 0.64;                                              // 高難度帯の上限
-}
+  /* 障害物1本 ＝ 巨大なローソク足1本。
+     画面の上下いっぱいに伸びる1本を作り、途中の GAP だけをくり抜く。
+     GAPの上下は同じX・同じ実体幅・同じ色・同じ中心軸の「同じ1本の続き」になる。 */
+  plan(x) {
+    const m = Math.max(0, x) / PPM, D = CONFIG.difficulty, C = CONFIG.candle;
+    const gapH = gapHeight(m);
+    const v = volatility(m) * F.h;
+    let delta, event = null;
 
-/* 到達可能なX範囲から着弾点を選ぶ（§19）
-   ・範囲は「実際に届く距離 × 0.92」と「要求速度の上限」の小さい方で決める
-   ・近い位置と遠い位置を混ぜ、遠い場合は進行方向と逆側を優先して切り返しを要求する */
-function chooseLanding(lead) {
-  const sp = playerMaxSpeed(), px = G.player.x, half = catchHalfW();
-  const c = G.catches, ph = phaseOf(c);
-  let lo = CONFIG.player.marginX * F.w, hi = (1 - CONFIG.player.marginX) * F.w;
-  if (ph === 1) { lo = F.w * 0.30; hi = F.w * 0.70; }        // 操作確認の2本だけ中央付近
-
-  let cap = travelRatioCap(c) * lead * sp.max;
-  if (ph === 1) cap *= 0.6;
-  const canR = Math.max(F.w * 0.05, Math.min(cap, reachDist(lead,  1) * 0.92));
-  const canL = Math.max(F.w * 0.05, Math.min(cap, reachDist(lead, -1) * 0.92));
-  hi = Math.min(hi, px + canR);
-  lo = Math.max(lo, px - canL);
-  if (hi < lo) { const m = clamp((lo + hi) / 2, half, F.w - half); lo = hi = m; }
-
-  const dir = G.player.v >= 0 ? 1 : -1;                      // 今の進行方向
-  let best = null;
-  for (let i = 0; i < 16; i++) {                             // 同じ位置に偏らせない
-    let x;
-    if (ph >= 3 && Math.random() < 0.45) {                   // 「すぐ動かないと間に合わない」配置
-      const side = Math.random() < 0.7 ? -dir : dir;         // 主に進行方向と逆側＝切り返し
-      const edge = side > 0 ? hi : lo;
-      x = Math.abs(edge - px) < F.w * 0.12 ? rand(lo, hi)    // その側に余裕がなければ通常抽選
-                                           : px + (edge - px) * rand(0.72, 1.0);
+    if (this.eventLeft > 0) {                       // MARKET CRASH / RALLY の継続
+      delta = this.eventDir * v * rand(1.2, 1.7);
+      this.eventLeft--;
+    } else if (m >= D.crashUnlock &&
+               x - this.lastEventX > scrollSpeed(m) * CONFIG.event.specialCooldownSeconds &&
+               Math.random() < 0.16) {
+      const crash = Math.random() < 0.55;
+      this.eventDir = crash ? 1 : -1;
+      this.eventLeft = 2;
+      this.lastEventX = x;
+      event = crash ? 'crash' : 'rally';
+      delta = this.eventDir * v * rand(1.2, 1.7);
+    } else if (m < 100) {                            // 序盤は操作を覚える区間（§9）
+      delta = rand(-0.4, 0.4) * v;
     } else {
-      x = rand(lo, hi);
+      if (this.trendLeft <= 0) {                     // 上げ / 下げ / もみ合いの流れ
+        this.trendLeft = 2 + ((Math.random() * 4) | 0);
+        this.trendDir = pick([-1, -1, 0, 1, 1]);
+      }
+      this.trendLeft--;
+      delta = this.trendDir * v * rand(0.35, 0.95) + v * rand(-0.35, 0.35);
     }
-    const d = G.lastLanding < 0 ? 99 : Math.abs(x - G.lastLanding);
-    if (d > F.w * 0.13) { best = x; break; }
-    if (best === null || d > Math.abs(best - G.lastLanding)) best = x;
-  }
-  return clamp(best, half * 0.6, F.w - half * 0.6);
-}
 
-function buildKnife() {
-  const type = pickType();
-  const g = CONFIG.geo;
-  const k = {
-    type, t:0, ang:0, angVel:0, vx:0, swayAmp:0, swayW:0, swayPh:0, baseX:0,
-    handleLen:g.handleLen * F.h, bladeLen:g.bladeLen * F.h, w:g.knifeW * F.w,
-    stuck:false
-  };
-  k.total = k.handleLen + k.bladeLen;
-  const startY = -k.total * 0.6 - F.h * 0.02;
-  k.vy = fallSpeed() * (type === 'fast' ? 1.28 : 1) * (G.practice ? 0.55 : (G.catches < 2 ? 0.88 : 1));
-  k.y = startY;
-  const T = (handY() - startY) / k.vy;                          // 落下時間
-  k.fallTime = T;
-  /* 実際に動ける時間 = min(前ナイフをキャッチしてからの間隔, 予告が出てからの時間)。
-     予告が長いキャラ（みっちゃん）が不利にならないよう min を取る。 */
-  const lead = Math.min(G.lastGap || Infinity, previewTime() + T);
-  const landing = G.practice
-    ? clamp(G.player.x + rand(-F.w * 0.06, F.w * 0.06), F.w * 0.2, F.w * 0.8)
-    : chooseLanding(lead);
-  G.lastLanding = landing;
+    delta = this.reachableDelta(delta, m, gapH);
+    const margin = C.routeMargin * F.h;
+    const gapY = clamp(this.lastGapY + delta, margin + gapH / 2, F.h - margin - gapH / 2);
+    const bull = gapY <= this.lastGapY;              // 上がった＝陽線
+    this.lastGapY = gapY;
 
-  if (type === 'diagonal') {
-    const dir = Math.random() < 0.5 ? -1 : 1;
-    let vx = dir * rand(0.10, 0.20) * F.w;
-    let sx = landing - vx * T;
-    const lo = F.w * 0.07, hi = F.w * 0.93;
-    if (sx < lo || sx > hi) { vx = -vx; sx = landing - vx * T; }
-    if (sx < lo || sx > hi) { vx = (landing - clamp(sx, lo, hi)) / T; sx = landing - vx * T; }
-    k.vx = vx; k.x = clamp(sx, lo, hi);
-  } else if (type === 'sway') {
-    k.swayAmp = rand(0.05, 0.085) * F.w;
-    k.swayW = Math.PI * 2 * rand(0.55, 0.85);
-    k.swayPh = rand(0, Math.PI * 2);
-    k.baseX = clamp(landing - k.swayAmp * Math.sin(k.swayW * T + k.swayPh), F.w * 0.08, F.w * 0.92);
-    k.x = k.baseX + k.swayAmp * Math.sin(k.swayPh);
-  } else {
-    k.x = landing;
-    if (type === 'rotate') {
-      k.angVel = (Math.random() < 0.5 ? -1 : 1) * rand(1.1, 2.0);
-      k.ang = rand(-0.5, 0.5);
+    /* 実体は GAP をまたぐ1本として置く。
+       GAPの端から画面端までのうち大部分を実体が占め、残りがヒゲになるので、
+       「1本の巨大ローソク足の途中がくり抜かれている」ように見える。
+       始値側の端は前の足の終値へ寄せて、前の足からの続きに見せる。 */
+    const gapTop = gapY - gapH / 2, gapBot = gapY + gapH / 2;
+    const minS = C.minBodySide * F.h;
+    const availT = Math.max(minS * 1.4, gapTop);          // GAP上端 〜 画面上端
+    const availB = Math.max(minS * 1.4, F.h - gapBot);    // GAP下端 〜 画面下端
+    const fill = () => rand(C.bodyFillMin, C.bodyFillMax);
+    let sideT, sideB;
+    if (bull) {                                     // 陽線：始値＝下端、終値＝上端
+      sideB = clamp(this.prevClose - gapBot, availB * C.bodyFillMin, availB * C.bodyFillMax);
+      sideT = availT * fill();
+    } else {                                        // 陰線：始値＝上端、終値＝下端
+      sideT = clamp(gapTop - this.prevClose, availT * C.bodyFillMin, availT * C.bodyFillMax);
+      sideB = availB * fill();
     }
+    const bodyTop = gapTop - Math.max(minS, sideT);
+    const bodyBot = gapBot + Math.max(minS, sideB);
+    this.prevClose = bull ? bodyTop : bodyBot;
+
+    /* ヒゲは実体の先から画面の外まで伸ばし、GAP以外は通れないようにする */
+    const high = Math.min(bodyTop - F.h * 0.01, -F.h * 0.04);
+    const low  = Math.max(bodyBot + F.h * 0.01,  F.h * 1.04);
+
+    return { x, gapY, gapH, bodyTop, bodyBot, high, low, bull, event,
+             passed:false, minEdge:1e9, warned:false, fired:false };
+  },
+
+  /* 到達可能な移動量へ丸める（§8.2）
+     ・上り：連打で維持できる平均上昇速度 ≒ |tapImpulse| / 2 に安全率を掛ける
+     ・下り：落下速度の上限つきで追いつける範囲
+     ・GAPの余裕（slack）のぶんだけ、さらに少し許容する */
+  reachableDelta(delta, m, gapH) {
+    const t = pitch(m) / scrollSpeed(m);
+    const slack = Math.max(0, gapH / 2 - collisionR()) * 0.5;
+    const maxUp   = 0.35 * Math.abs(tapImpulse()) * t + slack;
+    const maxDown = Math.min(0.45 * gravity() * t * t, maxFall() * t * 0.7) + slack;
+    return clamp(delta, -maxUp, maxDown);
+  },
+
+  /* 当たり判定に使う矩形（ワールドX × 画面Y）。
+     1本のローソク足から GAP の帯を抜いた4つの部分。
+     GAP側の端だけ hitMargin ぶん内側で判定するのでプレイヤー有利（§7）。 */
+  rects(o) {
+    const mg = CONFIG.candle.hitMargin * F.h;
+    const bw = bodyW() / 2 - mg, ww = wickW() / 2;
+    const gapTop = o.gapY - o.gapH / 2, gapBot = o.gapY + o.gapH / 2;
+    return [
+      [o.x - ww, o.high,      o.x + ww, o.bodyTop],       // 上ヒゲ
+      [o.x - bw, o.bodyTop,   o.x + bw, gapTop - mg],     // 実体（GAPより上）
+      [o.x - bw, gapBot + mg, o.x + bw, o.bodyBot],       // 実体（GAPより下）
+      [o.x - ww, o.bodyBot,   o.x + ww, o.low]            // 下ヒゲ
+    ];
   }
-  k.spawnX = k.x;
-  return k;
-}
+};
 
-function knifePoints(k) {
-  const top = -k.total / 2, jun = top + k.handleLen, tip = top + k.total;
-  const c = Math.cos(k.ang), s = Math.sin(k.ang);
-  const tr = (lx, ly) => ({ x:k.x + lx * c - ly * s, y:k.y + lx * s + ly * c });
-  return { top:tr(0, top), jun:tr(0, jun), tip:tr(0, tip),
-           hitEnd:tr(0, jun + k.bladeLen * CONFIG.geo.bladeHitScale), c, s };
-}
+/* 背景チャート（当たり判定なし） */
+const BgChart = {
+  list:[], nextX:0, prevClose:0, drift:0,
 
-function onSpawn(k) {
-  if (G.practice) { G.spawnAt = null; return; }
-  G.lastGap = nextSpawnDelay(k);
-  G.spawnAt = G.time + G.lastGap;           // 出した時点で次を予約＝キャッチ後に間が空かない
+  reset() {
+    this.list.length = 0;
+    this.prevClose = F.h * 0.5;
+    this.drift = Math.random() * Math.PI * 2;
+    this.nextX = -F.w * 0.5;
+    this.ensure(F.w * 1.6);
+  },
+
+  /* その地点の「相場の中心」＝前後の巨大ローソク足のGAP中心を補間したもの */
+  level(x) {
+    const L = Obstacles.list;
+    if (!L.length) return F.h * 0.5;
+    let a = L[0], b = L[L.length - 1];
+    for (let i = 0; i < L.length - 1; i++) {
+      if (L[i].x <= x && x <= L[i + 1].x) { a = L[i]; b = L[i + 1]; break; }
+    }
+    if (b.x === a.x) return a.gapY;
+    const t = clamp((x - a.x) / (b.x - a.x), 0, 1);
+    return lerp(a.gapY, b.gapY, t * t * (3 - 2 * t));
+  },
+
+  ensure(untilX) {
+    const C = CONFIG.candle;
+    const step = C.bgPitch * F.w;
+    let guard = 0;
+    while (this.nextX < untilX && guard++ < 400) {
+      const x = this.nextX;
+      const amp = C.bgAmp * F.h;
+      const target = this.level(x) + Math.sin(x / F.w * 2.2 + this.drift) * amp * 0.8;
+      const open = this.prevClose;
+      const close = lerp(open, target, 0.34) + rand(-amp, amp) * 0.55;
+      const bt = Math.min(open, close), bb = Math.max(open, close);
+      this.list.push({ x, o:open, c:close,
+                       h: bt - rand(0.006, 0.024) * F.h,
+                       l: bb + rand(0.006, 0.024) * F.h,
+                       bull: close < open });
+      this.prevClose = close;
+      this.nextX += step;
+    }
+  },
+
+  trim(minX) {
+    let n = 0;
+    while (n < this.list.length && this.list[n].x < minX) n++;
+    if (n > 0) this.list.splice(0, n);
+  },
+
+  rescaleY(k) {
+    this.prevClose *= k;
+    for (const c of this.list) { c.o *= k; c.c *= k; c.h *= k; c.l *= k; }
+  }
+};
+
+function circleRect(cx, cy, r, x0, y0, x1, y1) {
+  if (x1 <= x0 || y1 <= y0) return false;
+  const nx = clamp(cx, x0, x1), ny = clamp(cy, y0, y1);
+  const dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
 }
 
 /* ---------------------------------------------------------
-   10. 更新処理
+   8. ゲーム状態（§31）
 --------------------------------------------------------- */
-function updatePlayer(dt) {
-  const P = CONFIG.player, sp = playerMaxSpeed(), pl = G.player;
-  const dir = pressed() ? 1 : -1;
-  if (dir !== pl.dir) { pl.dir = dir; pl.dirTime = 0; }
-  pl.dirTime += dt;
-  const accel = Math.min(1, pl.dirTime / P.accelTime);
-  const target = dir * (sp.base + (sp.max - sp.base) * accel);
-  const rate = (2 * sp.max) / turnTime();                       // 弱い慣性（§9.1）
-  if (pl.v < target) pl.v = Math.min(target, pl.v + rate * dt);
-  else               pl.v = Math.max(target, pl.v - rate * dt);
-  pl.x += pl.v * dt;
-  const lo = P.marginX * F.w, hi = (1 - P.marginX) * F.w;
-  if (pl.x <= lo) { pl.x = lo; if (pl.v < 0) pl.v = 0; }        // 端では停止・反射しない
-  if (pl.x >= hi) { pl.x = hi; if (pl.v > 0) pl.v = 0; }
+const GAME_STATE = {
+  TITLE: 'title',
+  SELECT: 'select',
+  TUTORIAL: 'tutorial',
+  READY: 'ready',
+  PLAYING: 'playing',
+  PAUSED: 'paused',
+  GAME_OVER: 'game_over'
+};
+
+const G = {
+  state: GAME_STATE.TITLE,
+  char: charById(SAVE.selectedCharacter),
+  time: 0, real: 0,
+  wx: 0,                   // プレイヤーのワールドX
+  dist: 0,                 // m
+  asset: CONFIG.score.startAsset,
+  riskPoints: 0,
+  candles: 0,              // 抜けた本数
+  player: { y:0, vy:0, miss:false, pose:'go', poseT:0 },
+  freeze: 0, shake: 0, flash: 0, flashColor: '#ffffff',
+  overT: 0, overReason: '', overKind: 'candle',
+  newBest: false, bestHinted: false,
+  banner: null, bannerT: 0,
+  toasts: [], particles: []
+};
+
+/* ---------------------------------------------------------
+   9. 実行制御
+--------------------------------------------------------- */
+function resetRun() {
+  G.time = 0; G.wx = 0; G.dist = 0;
+  G.asset = CONFIG.score.startAsset;
+  G.riskPoints = 0; G.candles = 0; G.riskTime = 0; G.riskCd = 0;
+  G.freeze = 0; G.shake = 0; G.flash = 0;
+  G.overT = 0; G.newBest = false; G.bestHinted = false;
+  G.banner = null; G.bannerT = 0;
+  G.toasts.length = 0; G.particles.length = 0;
+  Obstacles.reset();
+  BgChart.reset();
+  G.player.y = F.h * 0.5; G.player.vy = 0; G.player.miss = false;
+  G.player.pose = poseName(); G.player.poseT = 0;
 }
 
-function addFloat(text, x, y, color, size, life) {
-  G.floats.push({ text, x, y, color, size, t:0, life:life || 0.75 });
-}
-function burst(x, y, n, color, power, star) {
-  for (let i = 0; i < n; i++) {
-    const a = rand(0, Math.PI * 2), s = rand(0.3, 1) * (power || 1) * F.h;
-    G.particles.push({ x, y, vx:Math.cos(a) * s, vy:Math.sin(a) * s - F.h * 0.15,
-      life:rand(0.28, 0.62), t:0, color, star:!!star, spin:rand(-8, 8),
-      r:rand(1.5, 4) * (F.w / 400) * (star ? 2.2 : 1) });
-  }
-}
-function ring(x, y, r0, r1, color, life, width) {
-  G.rings.push({ x, y, r0, r1, color, t:0, life:life || 0.26, w:width || F.w * 0.008 });
+function goReady() {
+  resetRun();
+  G.state = GAME_STATE.READY;
+  showScreen(null);
 }
 
-/* キャッチ成功エフェクト（§40）。キャラ画像は差し替えず、上に重ねるだけ。
-   GOOD    : 小さい光
-   GREAT   : 光 ＋ リング
-   PERFECT : 光 ＋ 二重リング ＋ 星 ＋ 少し大きい文字 */
-function catchFx(x, y, grade) {
-  const fx = CONFIG.player.catchFxDuration / 1000;
-  const col = grade === 'PERFECT' ? '#ffd45e' : grade === 'GREAT' ? '#6fc3ff' : '#e8eef7';
-  const size = grade === 'PERFECT' ? 0.048 : grade === 'GREAT' ? 0.038 : 0.030;
-  addFloat(grade === 'PERFECT' ? 'PERFECT!' : grade, x, y - F.h * 0.045, col, size, fx + 0.10);
-  if (grade === 'PERFECT') {
-    burst(x, y, 18, col, 0.7);
-    burst(x, y, 6, '#fff3c4', 0.5, true);            // 星
-    ring(x, y, F.w * 0.02, F.w * 0.20, col, fx, F.w * 0.010);
-    ring(x, y, F.w * 0.02, F.w * 0.13, '#ffffff', fx * 0.75, F.w * 0.006);
-  } else if (grade === 'GREAT') {
-    burst(x, y, 12, col, 0.55);
-    ring(x, y, F.w * 0.02, F.w * 0.15, col, fx, F.w * 0.007);
-  } else {
-    burst(x, y, 7, col, 0.45);
-  }
-  G.player.pop = fx;                                  // ごく軽いバウンド
-  G.player.popMax = fx;
-}
-function showBanner(text, color, life) { G.banner = { text, color }; G.bannerT = life || 1.0; }
-
-function doCatch(k, grade, ratio) {
-  const S = CONFIG.score;
-  G.knives.splice(G.knives.indexOf(k), 1);
-  G.grades[grade]++;
-  if (G.practice) {
-    G.practiceDone = true;
-    addFloat('OK!', k.x, handY() - F.h * 0.04, '#ffd45e', 0.055, 0.8);
-    burst(k.x, handY(), 16, '#ffd45e', 0.6);
-    ring(k.x, handY(), F.w * 0.02, F.w * 0.18, '#ffd45e', 0.3, F.w * 0.008);
-    Sound.catchSE('PERFECT', 0); G.hitstop = 0.05;
-    G.player.pop = CONFIG.player.catchFxDuration / 1000;
-    G.player.popMax = G.player.pop;
-    setTimeout(() => { if (G.state === 'play' && G.practice) finishTutorial(); }, 520);
-    return;
-  }
-  G.catches++;
-  if (grade === 'GREAT') G.combo += 1;
-  else if (grade === 'PERFECT') G.combo += 2;
-  G.maxCombo = Math.max(G.maxCombo, G.combo);
-  const c = G.combo;
-  const mul = c >= 30 ? 1.5 : c >= 20 ? 1.3 : c >= 10 ? 1.2 : c >= 5 ? 1.1 : 1.0;
-  G.score += Math.round(S[grade] * mul);
-
-  catchFx(k.x, handY(), grade);                      // キャラは通常画像のまま
-  G.hitstop = grade === 'PERFECT' ? 0.035 : 0.018;   // テンポを止めない（変更なし）
-  G.shake = Math.max(G.shake, grade === 'PERFECT' ? 5 : 2.5);
-  Sound.catchSE(grade, G.combo);
-  if (grade === 'PERFECT' && navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
-
-  /* BEST目前演出（§45） */
-  const best = SAVE.best.catch;
-  if (best >= 5) {
-    if (!G.bestFlag.neu && G.catches === best + 1) { G.bestFlag.neu = true; showBanner('NEW BEST!', '#ffd45e', 1.4); Sound.newBestSE(); }
-    else if (!G.bestFlag.tie && G.catches === best) { G.bestFlag.tie = true; showBanner('BEST TIE!', '#6fc3ff', 1.1); }
-    else if (!G.bestFlag.near && G.catches === best - 2) { G.bestFlag.near = true; showBanner('BESTまであと2！', '#8ba0bd', 1.0); }
-  }
-  if (!G.crash && G.catches >= CONFIG.difficulty.overlapUnlock - 1) {
-    G.crash = true; showBanner('MARKET CRASH', '#ff4d5e', 1.5); G.flash = 0.5;
-  }
-  if (G.spawnAt === null) G.spawnAt = G.time + spawnInterval() + previewTime();  // 保険
-  updateHud();
+function beginPlay() {
+  G.state = GAME_STATE.PLAYING;
+  flap();
 }
 
-function gameOver(kind, k) {
-  if (G.state !== 'play') return;
-  if (G.practice) {                                             // 練習では終了しない
-    if (k) { G.knives.splice(G.knives.indexOf(k), 1); }
-    addFloat('もう一度！', F.w / 2, handY() - F.h * 0.06, '#ff4d5e', 0.038, 0.9);
-    Sound.dropSE();
-    G.spawnAt = G.time + 0.7 + previewTime();
-    return;
-  }
-  G.state = 'over'; G.overT = 0; G.overKind = kind;
-  const qs = OVER_QUOTES[kind]; G.overQuote = qs[Math.floor(Math.random() * qs.length)];
-  G.shake = kind === 'blade' ? 14 : 9; G.flash = kind === 'blade' ? 0.6 : 0.3;
-  G.player.pose = 3; G.player.poseT = Infinity; G.player.pop = 0;   // 即座にMissへ
-  Sound.stopBgm();
-  if (kind === 'blade') { Sound.bladeSE(); burst(G.player.x, bodyTop(), 20, '#ff4d5e', 0.7); }
-  else { Sound.dropSE(); if (k) { k.stuck = true; k.vy = 0; k.vx = 0; k.angVel = 0; k.ang = 0; k.y = floorY() + k.bladeLen * 0.35 - k.total / 2; } }
-  if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) {} }
+function flap() {
+  G.player.vy = tapImpulse();
+  Sound.tap();
+  burst(playerX() - visualR() * 0.5, G.player.y + visualR() * 0.5, 4, '#9fd7ff', F.h * 0.04);
+}
+
+function gameOver(kind) {
+  if (G.state === GAME_STATE.GAME_OVER) return;
+  G.state = GAME_STATE.GAME_OVER;
+  G.overKind = kind;
+  G.overReason = pick(OVER_QUOTES[kind] || OVER_QUOTES.candle);
+  G.player.miss = true; G.player.pose = 'miss';
+  G.player.vy = tapImpulse() * 0.35;          // 軽く跳ねてから落ちる
+  G.freeze = 0.045;                            // ヒットストップ（§20）
+  G.shake = F.h * 0.020;
+  G.flash = 0.35; G.flashColor = '#ff4d5e';
+  G.overT = 0;
+  Sound.over();
+  burst(playerX(), G.player.y, 16, '#ff8a95', F.h * 0.13);
   commitScore();
 }
 
-function updateKnives(dt) {
-  const hx = G.player.x, hy = handY();
-  const chw = catchHalfW(), chh = CONFIG.layout.handHalfH * F.h;
-  const dhw = dangerHalfW(), bt = bodyTop(), bb = bt + CONFIG.layout.dangerH * F.h;
-
-  for (let i = G.knives.length - 1; i >= 0; i--) {
-    const k = G.knives[i];
-    if (k.stuck) continue;
-    k.t += dt;
-    k.y += k.vy * dt;
-    if (k.type === 'sway') k.x = k.baseX + k.swayAmp * Math.sin(k.swayW * k.t + k.swayPh);
-    else if (k.vx) {
-      k.x += k.vx * dt;
-      if (k.x < F.w * 0.04) { k.x = F.w * 0.04; k.vx = Math.abs(k.vx); }
-      if (k.x > F.w * 0.96) { k.x = F.w * 0.96; k.vx = -Math.abs(k.vx); }
-    }
-    if (k.angVel) k.ang += k.angVel * dt;
-
-    const P = knifePoints(k);
-    /* キャッチ判定（柄 × 手） */
-    if (segAabb(P.top.x, P.top.y, P.jun.x, P.jun.y, hx - chw, hy - chh, hx + chw, hy + chh)) {
-      const cp = closestOnSeg(hx, hy, P.top.x, P.top.y, P.jun.x, P.jun.y);
-      const ratio = Math.abs(cp.x - hx) / chw;
-      const grade = ratio <= perfectRatio() ? 'PERFECT'
-                  : ratio <= CONFIG.judgement.greatRatio ? 'GREAT' : 'GOOD';
-      doCatch(k, grade, ratio);
-      continue;
-    }
-    /* 刃 × 体の危険判定 */
-    if (segAabb(P.jun.x, P.jun.y, P.hitEnd.x, P.hitEnd.y, hx - dhw, bt, hx + dhw, bb)) {
-      gameOver('blade', k); return;
-    }
-    /* 取り逃し */
-    if (Math.min(P.top.y, P.tip.y) > F.h) { gameOver('drop', k); return; }
-  }
-}
-
-function updateSpawn(dt) {
-  if (G.spawnAt === null) return;
-  const pv = previewTime();
-  if (!G.pending && G.time >= G.spawnAt - pv) G.pending = buildKnife();
-  if (G.pending && G.time >= G.spawnAt) {
-    const k = G.pending; G.pending = null;
-    G.knives.push(k);
-    onSpawn(k);
-  }
-}
-
-function updateEffects(dt) {
-  /* キャッチ演出のタイマーはヒットストップとは別管理・実時間。
-     ゲーム進行（落下・生成・入力）は一切止めない。
-     連続キャッチのたびに catchFx が再設定するので、その時点から数え直しになる。 */
-  const pl = G.player;
-  if (pl.pop > 0) pl.pop = Math.max(0, pl.pop - dt);
-  if (pl.pose !== 3 && pl.poseT > 0) { pl.poseT -= dt; if (pl.poseT <= 0) pl.pose = 0; }
-  for (let i = G.particles.length - 1; i >= 0; i--) {
-    const p = G.particles[i]; p.t += dt;
-    if (p.t >= p.life) { G.particles.splice(i, 1); continue; }
-    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += F.h * 1.6 * dt; p.vx *= 0.97;
-  }
-  for (let i = G.rings.length - 1; i >= 0; i--) {
-    const r = G.rings[i]; r.t += dt;
-    if (r.t >= r.life) G.rings.splice(i, 1);
-  }
-  for (let i = G.floats.length - 1; i >= 0; i--) {
-    const f = G.floats[i]; f.t += dt;
-    if (f.t >= f.life) G.floats.splice(i, 1); else f.y -= F.h * 0.05 * dt;
-  }
-  if (G.bannerT > 0) { G.bannerT -= dt; if (G.bannerT <= 0) G.banner = null; }
-  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 45);
-  if (G.flash > 0) G.flash = Math.max(0, G.flash - dt * 2.2);
-  if (G.crash) G.crashT += dt;
-}
-
-function update(dt) {
-  G.time += dt;
-  updateEffects(dt);
-  if (G.state === 'count') {
-    updatePlayer(dt);
-    G.countT += dt;
-    const rem = Math.ceil(G.countLen - G.countT);
-    if (rem !== G.countShown && rem > 0) { G.countShown = rem; Sound.countSE(false); }
-    if (G.countT >= G.countLen) { Sound.countSE(true); beginPlay(); }
-    return;
-  }
-  if (G.state === 'play') {
-    if (G.hitstop > 0) { G.hitstop -= dt; return; }
-    updatePlayer(dt);
-    updateSpawn(dt);
-    updateKnives(dt);
-    Sound.tickBgm(G.catches);
-    return;
-  }
-  if (G.state === 'over') {
-    G.overT += dt;
-    if (G.overT > 0.7 && scResult.classList.contains('hidden')) showResult();
-  }
+function commitScore() {
+  const m = Math.floor(G.dist);
+  if (m > SAVE.bestDistance) { SAVE.bestDistance = m; G.newBest = true; }
+  if (G.asset > SAVE.bestAsset) SAVE.bestAsset = Math.floor(G.asset);
+  persist();
 }
 
 /* ---------------------------------------------------------
-   11. 描画
+   10. 演出（軽量・プレイを邪魔しない／§24）
 --------------------------------------------------------- */
-function drawBackground() {
-  const g = ctx;
-  const crash = G.crash ? Math.min(1, G.crashT * 1.2) : 0;
-  const grad = g.createLinearGradient(0, 0, 0, F.h);
-  grad.addColorStop(0, crash ? '#2a0e14' : '#101a26');
-  grad.addColorStop(1, crash ? '#160a10' : '#0b1119');
-  g.fillStyle = grad; g.fillRect(0, 0, F.w, F.h);
-
-  /* 背景のローソク足（株テーマ・視認性を落とさない濃度） */
-  g.save(); g.globalAlpha = 0.16;
-  const n = 16, bw = F.w / n, scroll = (G.time * 14) % bw;
-  for (let i = 0; i < n + 2; i++) {
-    const idx = Math.floor((G.time * 14) / bw) + i;
-    const r1 = Math.abs(Math.sin(idx * 12.9898) * 43758.5453) % 1;
-    const r2 = Math.abs(Math.sin(idx * 78.233) * 12345.678) % 1;
-    const up = G.crash ? r1 > 0.72 : r1 > 0.42;
-    const cx = i * bw - scroll + bw / 2;
-    const mid = F.h * (0.30 + 0.34 * r2);
-    const hgt = F.h * (0.03 + 0.10 * r1);
-    g.strokeStyle = g.fillStyle = up ? '#2ecc71' : '#ff4d5e';
-    g.lineWidth = Math.max(1, F.w * 0.004);
-    g.beginPath(); g.moveTo(cx, mid - hgt * 0.9); g.lineTo(cx, mid + hgt * 0.9); g.stroke();
-    g.fillRect(cx - bw * 0.26, mid - hgt * 0.5, bw * 0.52, hgt);
+function addToast(text, color) {
+  G.toasts.push({ text, color: color || '#ffd45e', t: 0, life: 1.0,
+                  x: playerX() + F.w * 0.10, y: G.player.y - visualR() * 1.6 });
+}
+function showBanner(text, sub, color, life) {
+  G.banner = { text, sub, color: color || '#ffd45e' };
+  G.bannerT = life || 1.1;
+}
+function burst(x, y, n, color, power) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = power * rand(0.25, 1);
+    G.particles.push({ x, y, vx:Math.cos(a) * s, vy:Math.sin(a) * s,
+                       life:rand(0.25, 0.55), t:0, color, r:F.h * rand(0.003, 0.007) });
   }
-  g.restore();
-
-  /* 床（ミニキャラの足元に合わせる） */
-  const fy = floorY();
-  g.fillStyle = '#161f2c'; g.fillRect(0, fy, F.w, F.h - fy + 2);
-  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(0, fy, F.w, 1.5);
+}
+/* ポーズの切り替え。最短保持時間でバタつきを抑える（タップ直後の上昇だけ即時） */
+function updatePose(dt) {
+  const p = G.player;
+  if (p.miss) { p.pose = 'miss'; return; }      // 衝突後は miss 固定（上書きしない）
+  p.poseT += dt;
+  const want = poseName();
+  if (want === p.pose) return;
+  /* タップ直後の up は即時。それ以外は最短保持時間を置いてバタつきを止める */
+  if (want === 'up' || p.poseT >= POSE_HOLD) { p.pose = want; p.poseT = 0; }
+}
+function updateEffects(dt) {
+  updatePose(dt);
+  for (let i = G.particles.length - 1; i >= 0; i--) {
+    const p = G.particles[i];
+    p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += F.h * 0.5 * dt;
+    if (p.t >= p.life) G.particles.splice(i, 1);
+  }
+  for (let i = G.toasts.length - 1; i >= 0; i--) {
+    const t = G.toasts[i];
+    t.t += dt; t.y -= F.h * 0.05 * dt;
+    if (t.t >= t.life) G.toasts.splice(i, 1);
+  }
+  if (G.riskTime > 0) G.riskTime = Math.max(0, G.riskTime - dt);
+  if (G.bannerT > 0) G.bannerT = Math.max(0, G.bannerT - dt);
+  if (G.shake > 0)   G.shake = Math.max(0, G.shake - F.h * 0.12 * dt);
+  if (G.flash > 0)   G.flash = Math.max(0, G.flash - dt * 1.6);
 }
 
-function drawKnife(k, alpha) {
-  const g = ctx;
-  g.save(); g.translate(k.x, k.y); g.rotate(k.ang);
-  if (alpha !== undefined) g.globalAlpha = alpha;
-  const w = k.w, hl = k.handleLen, bl = k.bladeLen, top = -k.total / 2, jun = top + hl;
-  /* 柄（掴む部分・目立たせる） */
-  const grip = g.createLinearGradient(-w / 2, 0, w / 2, 0);
-  grip.addColorStop(0, '#8a5a2b'); grip.addColorStop(0.45, '#d79a53'); grip.addColorStop(1, '#7a4d22');
-  g.fillStyle = grip;
-  g.beginPath();
-  const r = w * 0.42;
-  g.moveTo(-w / 2, top + r); g.quadraticCurveTo(-w / 2, top, -w / 2 + r, top);
-  g.lineTo(w / 2 - r, top); g.quadraticCurveTo(w / 2, top, w / 2, top + r);
-  g.lineTo(w / 2, jun); g.lineTo(-w / 2, jun); g.closePath(); g.fill();
-  g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = Math.max(1, w * 0.08);
-  for (let i = 1; i <= 3; i++) {
-    const y = top + hl * (i / 4);
-    g.beginPath(); g.moveTo(-w / 2, y); g.lineTo(w / 2, y); g.stroke();
+/* ---------------------------------------------------------
+   11. 更新
+--------------------------------------------------------- */
+function update(dt) {
+  G.real += dt;
+
+  if (G.state === GAME_STATE.READY) {
+    /* 開始前はふわふわ浮かせて待つ */
+    G.player.y = F.h * 0.5 + Math.sin(G.real * 2.2) * F.h * 0.012;
+    G.player.vy = Math.cos(G.real * 2.2) * F.h * 0.026;
+    updateEffects(dt);
+    return;
   }
-  /* 掴む位置のハイライト */
-  g.fillStyle = 'rgba(255,212,94,.55)';
-  g.fillRect(-w / 2, top + hl * 0.44, w, hl * 0.12);
-  /* 鍔 */
-  g.fillStyle = '#c9d3e0';
-  g.fillRect(-w * 0.85, jun - w * 0.10, w * 1.7, w * 0.30);
-  /* 刃 */
-  const blade = g.createLinearGradient(-w / 2, 0, w / 2, 0);
-  blade.addColorStop(0, '#7e8ea3'); blade.addColorStop(0.4, '#eef4ff'); blade.addColorStop(1, '#93a3b8');
-  g.fillStyle = blade;
-  g.beginPath();
-  g.moveTo(-w * 0.52, jun + w * 0.2); g.lineTo(w * 0.52, jun + w * 0.2);
-  g.lineTo(w * 0.30, top + hl + bl * 0.72); g.lineTo(0, top + hl + bl);
-  g.lineTo(-w * 0.30, top + hl + bl * 0.72); g.closePath(); g.fill();
-  g.strokeStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 1;
-  g.beginPath(); g.moveTo(0, jun + w * 0.3); g.lineTo(0, top + hl + bl * 0.9); g.stroke();
-  g.restore();
-}
 
-/* キャラクター描画（ゲーム内・選択画面 共用）
-   u = 基準単位。手の位置(cx, hy)を基準に組み立てる */
-function drawCharacter(g, ch, cx, hy, u, opt) {
-  opt = opt || {};
-  const lean = opt.lean || 0, pose = opt.pose || 0;
-  const bt = hy + 0.085 * u;
-  const headR = 0.042 * u, headC = bt + headR;
-  g.save();
-  g.translate(cx, bt); g.rotate(lean); g.translate(-cx, -bt);
-
-  /* 影 */
-  g.fillStyle = 'rgba(0,0,0,.28)';
-  g.beginPath(); g.ellipse(cx, bt + 0.178 * u, 0.055 * u, 0.013 * u, 0, 0, Math.PI * 2); g.fill();
-
-  /* 脚 */
-  g.strokeStyle = ch.hair; g.lineWidth = 0.016 * u; g.lineCap = 'round';
-  g.beginPath(); g.moveTo(cx - 0.018 * u, bt + 0.135 * u); g.lineTo(cx - 0.024 * u, bt + 0.172 * u);
-  g.moveTo(cx + 0.018 * u, bt + 0.135 * u); g.lineTo(cx + 0.024 * u, bt + 0.172 * u); g.stroke();
-
-  /* 胴 */
-  g.fillStyle = ch.accent;
-  const bw = 0.070 * u, byT = bt + 0.070 * u, byB = bt + 0.142 * u, br = 0.020 * u;
-  g.beginPath();
-  g.moveTo(cx - bw / 2 + br, byT); g.lineTo(cx + bw / 2 - br, byT);
-  g.quadraticCurveTo(cx + bw / 2, byT, cx + bw / 2, byT + br);
-  g.lineTo(cx + bw / 2, byB - br); g.quadraticCurveTo(cx + bw / 2, byB, cx + bw / 2 - br, byB);
-  g.lineTo(cx - bw / 2 + br, byB); g.quadraticCurveTo(cx - bw / 2, byB, cx - bw / 2, byB - br);
-  g.lineTo(cx - bw / 2, byT + br); g.quadraticCurveTo(cx - bw / 2, byT, cx - bw / 2 + br, byT);
-  g.closePath(); g.fill();
-
-  /* 腕（キャッチポーズで少し内側に寄る） */
-  const inw = pose ? 0.006 * u : 0;
-  g.strokeStyle = ch.body; g.lineWidth = 0.015 * u;
-  g.beginPath();
-  g.moveTo(cx - 0.030 * u, bt + 0.085 * u); g.quadraticCurveTo(cx - 0.046 * u, bt + 0.03 * u, cx - 0.026 * u + inw, hy + 0.004 * u);
-  g.moveTo(cx + 0.030 * u, bt + 0.085 * u); g.quadraticCurveTo(cx + 0.046 * u, bt + 0.03 * u, cx + 0.026 * u - inw, hy + 0.004 * u);
-  g.stroke();
-
-  /* 頭 */
-  g.fillStyle = ch.body;
-  g.beginPath(); g.arc(cx, headC, headR, 0, Math.PI * 2); g.fill();
-  /* 髪 */
-  g.fillStyle = ch.hair;
-  g.beginPath(); g.arc(cx, headC - headR * 0.12, headR * 1.03, Math.PI * 1.03, Math.PI * 1.97); g.fill();
-  g.beginPath(); g.ellipse(cx - headR * 0.92, headC + headR * 0.1, headR * 0.26, headR * 0.55, 0, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.ellipse(cx + headR * 0.92, headC + headR * 0.1, headR * 0.26, headR * 0.55, 0, 0, Math.PI * 2); g.fill();
-
-  /* 目・口 */
-  g.fillStyle = '#2a2233';
-  const ey = headC + headR * 0.12, ex = headR * 0.38;
-  if (pose === 3) {                                  // 驚き
-    g.beginPath(); g.arc(cx - ex, ey, headR * 0.17, 0, Math.PI * 2);
-    g.arc(cx + ex, ey, headR * 0.17, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.ellipse(cx, ey + headR * 0.45, headR * 0.16, headR * 0.20, 0, 0, Math.PI * 2); g.fill();
-  } else if (ch.accessory === 'sleep') {             // ねむぱん：とろ目
-    g.lineWidth = headR * 0.13; g.strokeStyle = '#2a2233'; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(cx - ex - headR * 0.16, ey); g.lineTo(cx - ex + headR * 0.16, ey);
-    g.moveTo(cx + ex - headR * 0.16, ey); g.lineTo(cx + ex + headR * 0.16, ey); g.stroke();
-  } else {
-    g.beginPath(); g.ellipse(cx - ex, ey, headR * 0.11, headR * (pose === 2 ? 0.10 : 0.16), 0, 0, Math.PI * 2);
-    g.ellipse(cx + ex, ey, headR * 0.11, headR * (pose === 2 ? 0.10 : 0.16), 0, 0, Math.PI * 2); g.fill();
+  if (G.state === GAME_STATE.GAME_OVER) {
+    G.overT += dt;
+    const p = G.player;
+    p.vy = Math.min(p.vy + gravity() * dt, maxFall() * 1.6);
+    p.y += p.vy * dt;
+    p.y = Math.min(p.y, F.h + visualR() * 3);
+    updateEffects(dt);
+    if (G.overT > 0.85 && scResult.classList.contains('hidden')) showResult();
+    return;
   }
-  if (pose !== 3) {
-    g.strokeStyle = '#2a2233'; g.lineWidth = headR * 0.09; g.lineCap = 'round';
-    g.beginPath(); g.arc(cx, ey + headR * 0.30, headR * 0.16, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke();
-  }
-  /* ほっぺ */
-  g.fillStyle = 'rgba(255,120,150,.35)';
-  g.beginPath(); g.arc(cx - headR * 0.62, ey + headR * 0.28, headR * 0.16, 0, Math.PI * 2);
-  g.arc(cx + headR * 0.62, ey + headR * 0.28, headR * 0.16, 0, Math.PI * 2); g.fill();
 
-  /* アクセサリ */
-  const topY = headC - headR;
-  if (ch.accessory === 'crown') {
-    g.fillStyle = '#ffd45e';
-    g.beginPath();
-    g.moveTo(cx - headR * 0.62, topY + headR * 0.08); g.lineTo(cx - headR * 0.62, topY - headR * 0.42);
-    g.lineTo(cx - headR * 0.31, topY - headR * 0.10); g.lineTo(cx, topY - headR * 0.52);
-    g.lineTo(cx + headR * 0.31, topY - headR * 0.10); g.lineTo(cx + headR * 0.62, topY - headR * 0.42);
-    g.lineTo(cx + headR * 0.62, topY + headR * 0.08); g.closePath(); g.fill();
-  } else if (ch.accessory === 'antenna') {
-    g.strokeStyle = ch.hair; g.lineWidth = headR * 0.10;
-    g.beginPath();
-    g.moveTo(cx - headR * 0.3, topY + headR * 0.1); g.quadraticCurveTo(cx - headR * 0.7, topY - headR * 0.5, cx - headR * 0.5, topY - headR * 0.72);
-    g.moveTo(cx + headR * 0.3, topY + headR * 0.1); g.quadraticCurveTo(cx + headR * 0.7, topY - headR * 0.5, cx + headR * 0.5, topY - headR * 0.72);
-    g.stroke();
-    g.fillStyle = '#ffd45e';
-    g.beginPath(); g.arc(cx - headR * 0.5, topY - headR * 0.78, headR * 0.13, 0, Math.PI * 2);
-    g.arc(cx + headR * 0.5, topY - headR * 0.78, headR * 0.13, 0, Math.PI * 2); g.fill();
-  } else if (ch.accessory === 'star') {
-    g.fillStyle = 'rgba(255,212,94,' + (0.55 + 0.45 * Math.sin(G.time * 4)) + ')';
-    const sr = headR * 0.34, sy = topY - headR * 0.45;
-    g.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? sr * 0.45 : sr;
-      const px = cx + Math.cos(a) * rr, py = sy + Math.sin(a) * rr;
-      i ? g.lineTo(px, py) : g.moveTo(px, py);
+  if (G.state !== GAME_STATE.PLAYING) { updateEffects(dt); return; }
+
+  G.time += dt;
+
+  /* --- ワールド前進 --- */
+  const spd = scrollSpeed(G.dist);
+  G.wx += spd * dt;
+  G.dist = Math.max(0, G.wx) / PPM;
+  Obstacles.ensure(G.wx - playerX() + F.w * 1.8);
+  Obstacles.trim(G.wx - playerX() - bodyW() * 2);
+  BgChart.ensure(G.wx - playerX() + F.w * 1.8);
+  BgChart.trim(G.wx - playerX() - F.w * 0.1);
+
+  /* --- プレイヤー（タップで跳ね、ゆっくり落ちる）--- */
+  const p = G.player, r = collisionR();
+  p.vy = Math.min(p.vy + gravity() * dt, maxFall());       // 落下速度に上限
+  p.y += p.vy * dt;
+
+  /* 画面の上端・下端に触れたら一発アウト（Flappy系なのですべて即終了） */
+  if (p.y - r <= 0)   { p.y = r;       gameOver('ceiling'); return; }
+  if (p.y + r >= F.h) { p.y = F.h - r; gameOver('ground');  return; }
+
+  /* --- 巨大ローソク足との判定・通過処理（当たり判定はこれだけ）--- */
+  const bw = bodyW(), zone = CONFIG.candle.riskZoneRatio;
+  for (const o of Obstacles.list) {
+    const dx = G.wx - o.x;
+    if (dx < -(bw / 2 + r + 4)) break;                     // これ以降はまだ遠い
+    if (o.passed) continue;
+
+    if (Math.abs(dx) <= bw / 2 + r) {                      // 通過中：GAPの端との距離
+      const gapTop = o.gapY - o.gapH / 2, gapBot = o.gapY + o.gapH / 2;
+      o.minEdge = Math.min(o.minEdge, (p.y - r) - gapTop, gapBot - (p.y + r));
     }
-    g.closePath(); g.fill();
-  } else if (ch.accessory === 'sleep') {
-    g.fillStyle = 'rgba(255,255,255,.5)';
-    g.font = '600 ' + (headR * 0.7) + 'px sans-serif'; g.textAlign = 'center';
-    g.fillText('z', cx + headR * 1.1, topY + headR * 0.1);
+    for (const q of Obstacles.rects(o)) {
+      if (circleRect(G.wx, p.y, r, q[0], q[1], q[2], q[3])) { gameOver('candle'); return; }
+    }
+    if (dx > bw / 2 + r) {                                 // 抜けた
+      o.passed = true;
+      G.candles++;
+      if (o.minEdge <= o.gapH * zone) {                    // RISK BONUS（§12）
+        const pt = Math.round(CONFIG.risk.points * G.char.riskMul);
+        G.riskPoints += pt;
+        G.riskTime = 0.4;                                  // オーラ表示用
+        addToast('RISK BONUS +' + pt, '#ffd45e');
+        burst(playerX(), p.y, 8, '#ffd45e', F.h * 0.07);
+        Sound.risk();
+      } else {
+        Sound.pass();
+      }
+    }
   }
 
-  /* 手（キャッチ判定の位置） */
-  g.fillStyle = ch.body; g.strokeStyle = 'rgba(0,0,0,.15)'; g.lineWidth = 1;
-  const hr = 0.019 * u, hoff = 0.026 * u - inw;
-  g.beginPath(); g.arc(cx - hoff, hy, hr, 0, Math.PI * 2); g.fill(); g.stroke();
-  g.beginPath(); g.arc(cx + hoff, hy, hr, 0, Math.PI * 2); g.fill(); g.stroke();
+  /* --- ASSET（§11.2）--- */
+  G.asset = CONFIG.score.startAsset
+          + G.dist * CONFIG.score.yenPerMeter
+          + G.riskPoints * CONFIG.score.yenPerRiskPoint;
+
+  /* --- MARKET CRASH / RALLY の予兆（§10）--- */
+  const warnAhead = spd * CONFIG.event.warningSeconds;
+  for (const c of Obstacles.list) {
+    if (!c.event) continue;
+    if (!c.warned && G.wx >= c.x - warnAhead) {
+      c.warned = true;
+      if (c.event === 'crash') {
+        showBanner('MARKET CRASH', '暴落', '#ff4d5e', 1.2);
+        G.flash = 0.28; G.flashColor = '#ff4d5e'; G.shake = F.h * 0.012;
+      } else {
+        showBanner('MARKET RALLY', '急騰', '#2ecc71', 1.2);
+        G.flash = 0.22; G.flashColor = '#2ecc71'; G.shake = F.h * 0.008;
+      }
+      Sound.warning();
+    }
+    if (c.warned && !c.fired && G.wx >= c.x) {
+      c.fired = true;
+      G.shake = F.h * 0.014;
+      if (c.event === 'crash') Sound.crash(); else Sound.rally();
+    }
+  }
+
+  /* --- BEST演出（§19）--- */
+  const best = SAVE.bestDistance;
+  if (best > 120 && !G.bestHinted && G.dist >= best - 100 && G.dist < best) {
+    G.bestHinted = true;
+    showBanner('BESTまであと100m', '', '#6fc3ff', 1.0);
+  }
+  if (best > 0 && !G.newBest && G.dist >= best) {
+    G.newBest = true;
+    showBanner('NEW BEST!', '', '#ffd45e', 0.9);
+    burst(playerX(), p.y, 14, '#ffd45e', F.h * 0.10);
+    Sound.newBest();
+  }
+
+  updateEffects(dt);
+}
+
+/* ---------------------------------------------------------
+   12. 描画
+   すべて F（9:16フィールド）内のゲーム座標で描く。
+--------------------------------------------------------- */
+const COL = {
+  bgTop:'#0c1522', bgBottom:'#05080e',
+  grid:'rgba(120,160,220,.07)',
+  up:'#2ecc71', upDark:'#14603a',
+  down:'#ff4d5e', downDark:'#7a1f2a',
+  text:'#e8eef7', muted:'#8ba0bd', gold:'#ffd45e'
+};
+const FONT = 'system-ui,-apple-system,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif';
+const font = (px, w) => (w || 700) + ' ' + Math.round(px) + 'px ' + FONT;
+
+function render() {
+  const g = ctx;
+  g.fillStyle = '#05080e';
+  g.fillRect(0, 0, F.vw, F.vh);
+
+  g.save();
+  const sx = G.shake ? rand(-G.shake, G.shake) : 0;
+  const sy = G.shake ? rand(-G.shake, G.shake) : 0;
+  g.translate(F.ox + sx, F.oy + sy);
+  g.beginPath(); g.rect(-sx, -sy, F.w, F.h); g.clip();
+
+  const camX = G.wx - playerX();
+  const vEnd = visionX();
+  drawBackground(camX);
+  drawBgChart(camX, vEnd);
+  drawCandles(camX, vEnd);
+  drawFog(vEnd);
+  drawParticles();
+  drawPlayer();
+  drawHud();
+  drawOverlayText();
+
+  if (G.flash > 0) {
+    g.globalAlpha = Math.min(0.40, G.flash * 0.7);
+    g.fillStyle = G.flashColor;
+    g.fillRect(-sx, -sy, F.w, F.h);
+    g.globalAlpha = 1;
+  }
   g.restore();
+}
+
+function drawBackground(camX) {
+  const g = ctx;
+  const grd = g.createLinearGradient(0, 0, 0, F.h);
+  grd.addColorStop(0, COL.bgTop); grd.addColorStop(1, COL.bgBottom);
+  g.fillStyle = grd; g.fillRect(0, 0, F.w, F.h);
+
+  /* 横グリッド＋価格表示（背景・当たり判定なし） */
+  g.strokeStyle = COL.grid; g.lineWidth = 1;
+  g.font = font(F.h * 0.0115, 500); g.fillStyle = 'rgba(139,160,189,.32)';
+  g.textAlign = 'left'; g.textBaseline = 'bottom';
+  for (let i = 1; i <= 7; i++) {
+    const y = Math.round(F.h * i / 8) + 0.5;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(F.w, y); g.stroke();
+    const price = 38000 + (F.h / 2 - y) / F.h * 4200 + G.dist * 4;
+    g.fillText(fmt(price), F.w * 0.012, y - 2);
+  }
+  /* 縦グリッド（時間軸） */
+  const p = F.w * 0.16;
+  g.strokeStyle = 'rgba(120,160,220,.045)';
+  for (let x = -((camX % p) + p) % p; x < F.w; x += p) {
+    g.beginPath(); g.moveTo(Math.round(x) + 0.5, 0); g.lineTo(Math.round(x) + 0.5, F.h); g.stroke();
+  }
+}
+
+/* 背景チャート（薄い通常サイズのローソク足）。当たり判定は持たない。 */
+function drawBgChart(camX, vEnd) {
+  const g = ctx, C = CONFIG.candle;
+  const bw = C.bgBodyWidth * F.w, ww = C.bgWickWidth * F.w;
+  const list = BgChart.list;
+  if (!list.length) return;
+
+  g.save();
+  g.globalAlpha = C.bgAlpha;
+
+  /* 終値をつないだ株価ライン */
+  g.beginPath();
+  let started = false;
+  for (const c of list) {
+    const x = c.x - camX;
+    if (x < -bw || x > vEnd + bw) continue;
+    if (!started) { g.moveTo(x, c.c); started = true; } else g.lineTo(x, c.c);
+  }
+  if (started) {
+    g.strokeStyle = 'rgba(150,180,220,.45)';
+    g.lineWidth = Math.max(1, F.w * 0.003);
+    g.stroke();
+  }
+
+  for (const c of list) {
+    const x = c.x - camX;
+    if (x + bw < -4 || x - bw > vEnd + 4) continue;
+    const col = c.bull ? COL.up : COL.down;
+    const bt = Math.min(c.o, c.c), bb = Math.max(c.o, c.c);
+    g.fillStyle = col;
+    g.fillRect(x - ww / 2, c.h, ww, c.l - c.h);
+    g.fillRect(x - bw / 2, bt, bw, Math.max(1.5, bb - bt));
+  }
+  g.restore();
+}
+
+/* 障害物＝1本の巨大ローソク足。GAPの帯だけをくり抜いて描く。
+   上下は「別々の足」ではなく同じ1本の続きなので、
+   X・実体幅・色・中心軸・グラデーションをすべて共有する。 */
+function drawCandles(camX, vEnd) {
+  const g = ctx, bw = bodyW(), ww = wickW();
+  for (const o of Obstacles.list) {
+    const x = o.x - camX;
+    if (x + bw < -4 || x - bw > vEnd + 4) continue;
+    const col  = o.bull ? COL.up : COL.down;
+    const dark = o.bull ? COL.upDark : COL.downDark;
+    const gapTop = o.gapY - o.gapH / 2, gapBot = o.gapY + o.gapH / 2;
+
+    /* 同じ1本に見えるよう、実体のグラデーションは上下で共通のものを使う */
+    const grd = g.createLinearGradient(x - bw / 2, 0, x + bw / 2, 0);
+    grd.addColorStop(0, dark); grd.addColorStop(0.42, col); grd.addColorStop(1, dark);
+
+    g.save();
+    /* ヒゲ（GAPの外側だけ） */
+    g.fillStyle = col; g.globalAlpha = 0.95;
+    if (o.bodyTop > o.high)  g.fillRect(x - ww / 2, o.high, ww, o.bodyTop - o.high);
+    if (o.low > o.bodyBot)   g.fillRect(x - ww / 2, o.bodyBot, ww, o.low - o.bodyBot);
+    g.globalAlpha = 1;
+
+    /* 実体（GAPの上側・下側）。同じ幅・同じ中心軸・同じ色。 */
+    const piece = (y0, y1) => {
+      if (y1 - y0 <= 0) return;
+      g.fillStyle = grd;
+      g.fillRect(x - bw / 2, y0, bw, y1 - y0);
+      g.strokeStyle = 'rgba(255,255,255,.42)';
+      g.lineWidth = Math.max(1, F.w * 0.003);
+      /* 左右と外側だけ枠線を描き、切り口には枠を入れない（1本の続きに見せる） */
+      g.beginPath();
+      g.moveTo(x - bw / 2, y1); g.lineTo(x - bw / 2, y0);
+      g.lineTo(x + bw / 2, y0); g.lineTo(x + bw / 2, y1);
+      g.stroke();
+    };
+    piece(o.bodyTop, Math.min(gapTop, o.bodyBot));
+    piece(Math.max(gapBot, o.bodyTop), o.bodyBot);
+
+    /* 切り口（GAPのふち）。抜ける場所が分かるよう、内側に光を置く */
+    g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = F.w * 0.025;
+    g.lineWidth = Math.max(2, F.w * 0.005); g.lineCap = 'butt';
+    g.beginPath();
+    g.moveTo(x - bw / 2, gapTop); g.lineTo(x + bw / 2, gapTop);
+    g.moveTo(x - bw / 2, gapBot); g.lineTo(x + bw / 2, gapBot);
+    g.stroke();
+    g.restore();
+  }
+}
+
+/* 視界の限界（みっちゃんだけ先まで見える／§13） */
+function drawFog(vEnd) {
+  if (vEnd >= F.w - 1) return;
+  const g = ctx;
+  const grd = g.createLinearGradient(vEnd, 0, F.w, 0);
+  grd.addColorStop(0, 'rgba(5,8,14,0)');
+  grd.addColorStop(0.35, 'rgba(5,8,14,.85)');
+  grd.addColorStop(1, 'rgba(5,8,14,1)');
+  g.fillStyle = grd; g.fillRect(vEnd, 0, F.w - vEnd + 1, F.h);
+}
+
+function drawParticles() {
+  const g = ctx;
+  for (const p of G.particles) {
+    g.globalAlpha = Math.max(0, 1 - p.t / p.life);
+    g.fillStyle = p.color;
+    g.beginPath(); g.arc(p.x, p.y, p.r, 0, Math.PI * 2); g.fill();
+  }
+  g.globalAlpha = 1;
 }
 
 function drawPlayer() {
-  const pl = G.player, sp = playerMaxSpeed();
-  const lean = clamp(pl.v / sp.max, -1, 1) * 0.14;
-  /* キャッチ判定の目安（薄く表示して「見た目と判定の一致」を助ける） */
-  const g = ctx, hy = handY(), chw = catchHalfW();
-  /* キャッチ演出の強さ（0→1→0）。画像の差し替えではなくこの値で見せる */
-  const env = pl.pop > 0 ? Math.sin(Math.PI * Math.pow(1 - pl.pop / pl.popMax, 0.55)) : 0;
-  if (pl.pose !== 3) {                                  // ゲームオーバー中は出さない
-    g.save();
-    g.globalAlpha = 0.28 + 0.45 * env;
-    g.strokeStyle = '#ffd45e'; g.lineWidth = Math.max(1.2, F.w * 0.005);
-    g.lineCap = 'round';
-    const cap = F.h * 0.010;
-    g.beginPath();
-    g.moveTo(pl.x - chw, hy); g.lineTo(pl.x + chw, hy);
-    g.moveTo(pl.x - chw, hy - cap); g.lineTo(pl.x - chw, hy + cap);
-    g.moveTo(pl.x + chw, hy - cap); g.lineTo(pl.x + chw, hy + cap);
-    g.stroke();
-    g.restore();
-  }
+  const g = ctx, p = G.player, x = playerX(), r = visualR();
 
-  /* ごく軽い拡大＋上下バウンド（キャラ画像自体は差し替えない） */
-  g.save();
-  if (env > 0) {
-    g.translate(pl.x, hy + F.h * 0.10);
-    g.scale(1 + 0.05 * env, 1 + 0.05 * env);
-    g.translate(-pl.x, -(hy + F.h * 0.10));
-    g.translate(0, -F.h * 0.014 * env);
+  /* 判定の目安（見た目と判定の一致を助ける薄いオーラ）。
+     隙間の端に近いほど金色に光り、RISK ZONE が視覚的に分かる。 */
+  const risky = G.state === GAME_STATE.PLAYING && G.riskTime > 0.05;
+  const aura = g.createRadialGradient(x, p.y, r * 0.2, x, p.y, r * 1.35);
+  const auraCol = risky ? '255,212,94' : '111,195,255';
+  aura.addColorStop(0, 'rgba(' + auraCol + ',' + (risky ? 0.32 : 0.16) + ')');
+  aura.addColorStop(1, 'rgba(' + auraCol + ',0)');
+  g.fillStyle = aura;
+  g.beginPath(); g.arc(x, p.y, r * 1.35, 0, Math.PI * 2); g.fill();
+
+  /* 画像自体に飛行姿勢が描かれているので、Canvas側では回転させない。
+     体（胴〜顔）の直径が常に同じ大きさになるよう bodyD で倍率を決め、
+     体の中心（ax, ay）をプレイヤー座標に合わせて置くだけ。 */
+  const s = spriteFor(G.char.id, p.pose);
+  if (s) {
+    const part = s.part;
+    const ih = (CONFIG.player.bodyDisplay * F.h) / (part.bodyD || 0.45);
+    const iw = ih * s.img.naturalWidth / s.img.naturalHeight;
+    g.drawImage(s.img, x - part.ax * iw, p.y - part.ay * ih, iw, ih);
+  } else {
+    drawCharacter(g, G.char, x, p.y, r, p.miss);
   }
-  const s = spriteFor(G.char.id, pl.pose);
-  if (s) drawPlayerSprite(s, pl.x, hy);
-  else   drawCharacter(ctx, G.char, pl.x, hy, F.h * CONFIG.player.visualScale, { lean, pose: pl.pose });
-  g.restore();
 }
 
-/* 画像は「ゲーム内座標に合わせて置くだけ」。
-   高さ = 手の位置〜足元の距離 ÷ (footY - 通常画像のay) なので、
-   ポーズが変わっても倍率は一定。当たり判定・リーチは画像に一切影響されない。 */
-function drawPlayerSprite(s, cx, hy) {
-  const h = (floorY() - hy) / (s.sp.footY - s.sp.normal.ay);
-  const w = h * s.img.naturalWidth / s.img.naturalHeight;
-  const x = cx + (s.sp.offsetX || 0) * F.w - s.ax * w;
-  const y = hy + (s.sp.offsetY || 0) * F.h - s.ay * h;
-  ctx.drawImage(s.img, x, y, w, h);
-}
-
-function drawPreview() {
-  if (!G.pending || G.state !== 'play') return;
-  const k = G.pending, g = ctx;
-  const rest = Math.max(0, G.spawnAt - G.time), pv = previewTime();
-  const a = 0.62 + 0.38 * Math.sin(G.time * 14);
-  const col = G.char.id === 'micchan' ? '#9be7ff' : '#ffd45e';
-  const x = k.spawnX, y = F.h * 0.030, s = F.w * 0.030;
+/* 画像が無いときのフォールバック描画 */
+function drawCharacter(g, ch, x, y, r, miss) {
   g.save();
-  /* 上端の光 */
-  const beam = g.createLinearGradient(0, 0, 0, F.h * 0.11);
-  beam.addColorStop(0, col); beam.addColorStop(1, 'rgba(0,0,0,0)');
-  g.globalAlpha = a * 0.30; g.fillStyle = beam;
-  g.fillRect(x - F.w * 0.035, 0, F.w * 0.070, F.h * 0.11);
-  /* ▼ */
-  g.globalAlpha = a; g.fillStyle = col;
-  g.shadowColor = col; g.shadowBlur = F.w * 0.05;
-  g.beginPath(); g.moveTo(x - s, y - s * 0.85); g.lineTo(x + s, y - s * 0.85); g.lineTo(x, y + s * 0.85); g.closePath(); g.fill();
-  g.shadowBlur = 0;
-  if (k.type === 'diagonal') {                       // 斜めは向きを示す
-    const d = Math.sign(k.vx);
-    g.beginPath(); g.moveTo(x + d * s * 1.5, y + s * 0.1); g.lineTo(x + d * s * 2.7, y - s * 0.35);
-    g.lineTo(x + d * s * 1.5, y - s * 0.8); g.closePath(); g.fill();
-  }
-  /* 予告時間が長いキャラ（みっちゃん）は半透明ナイフも見せる */
-  if (pv >= 0.35 && rest > 0.05) {
-    g.globalAlpha = 0.22 * Math.min(1, rest / pv);
-    const ghost = Object.assign({}, k, { x:k.spawnX, y:F.h * 0.135, ang:k.ang });
-    drawKnife(ghost);
+  g.fillStyle = ch.body; g.strokeStyle = ch.accent; g.lineWidth = r * 0.16;
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); g.stroke();
+  g.fillStyle = ch.hair;
+  g.beginPath(); g.arc(x, y - r * 0.35, r * 0.78, Math.PI, 0); g.fill();
+  g.fillStyle = '#2a2118';
+  const ey = y - r * 0.05, ex = r * 0.32;
+  if (miss) {
+    g.strokeStyle = '#2a2118'; g.lineWidth = r * 0.10;
+    [-1, 1].forEach(s => {
+      g.beginPath();
+      g.moveTo(x + s * ex - r * 0.13, ey - r * 0.13); g.lineTo(x + s * ex + r * 0.13, ey + r * 0.13);
+      g.moveTo(x + s * ex + r * 0.13, ey - r * 0.13); g.lineTo(x + s * ex - r * 0.13, ey + r * 0.13);
+      g.stroke();
+    });
+  } else {
+    [-1, 1].forEach(s => { g.beginPath(); g.arc(x + s * ex, ey, r * 0.11, 0, Math.PI * 2); g.fill(); });
   }
   g.restore();
 }
 
-function drawStar(g, x, y, r, rot) {
-  g.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const a = rot - Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.42 : r;
-    const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
-    i ? g.lineTo(px, py) : g.moveTo(px, py);
-  }
-  g.closePath(); g.fill();
-}
-function drawEffects() {
+/* ゲーム中UI（§18）：情報を増やしすぎない */
+function drawHud() {
+  if (G.state === GAME_STATE.TITLE || G.state === GAME_STATE.SELECT ||
+      G.state === GAME_STATE.TUTORIAL) return;
   const g = ctx;
-  G.rings.forEach(r => {                       // 広がるリング
-    const k = r.t / r.life;
-    g.globalAlpha = Math.max(0, 1 - k) * 0.9;
-    g.strokeStyle = r.color;
-    g.lineWidth = r.w * (1 - k * 0.65);
-    g.beginPath(); g.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * (1 - Math.pow(1 - k, 2)), 0, Math.PI * 2);
-    g.stroke();
-  });
-  g.globalAlpha = 1;
-  G.particles.forEach(p => {
-    g.globalAlpha = Math.max(0, 1 - p.t / p.life);
-    g.fillStyle = p.color;
-    if (p.star) drawStar(g, p.x, p.y, p.r, p.t * p.spin);
-    else { g.beginPath(); g.arc(p.x, p.y, p.r, 0, Math.PI * 2); g.fill(); }
-  });
-  g.globalAlpha = 1;
-  G.floats.forEach(f => {
-    const k = f.t / f.life;
-    g.globalAlpha = Math.max(0, 1 - k * k);
-    const sc = 1 + 0.25 * Math.min(1, f.t * 9) - 0.1 * k;
-    g.save();
-    g.font = '900 ' + (f.size * F.h) + 'px -apple-system,BlinkMacSystemFont,sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    const half = g.measureText(f.text).width * sc / 2 + F.w * 0.02;   // 画面外にはみ出さない
-    g.translate(clamp(f.x, half, F.w - half), f.y); g.scale(sc, sc);
-    g.lineWidth = f.size * F.h * 0.18; g.strokeStyle = 'rgba(0,0,0,.55)';
-    g.strokeText(f.text, 0, 0);
-    g.fillStyle = f.color; g.fillText(f.text, 0, 0);
-    g.restore();
-  });
-  g.globalAlpha = 1;
+  const top = Math.max(0, SAFE.t - F.oy) + F.h * 0.022;
+  const padX = F.w * 0.055;
+
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,.7)'; g.shadowBlur = 6;
+  g.textAlign = 'left'; g.textBaseline = 'top';
+  g.fillStyle = COL.muted; g.font = font(F.h * 0.0105, 700);
+  g.fillText('DISTANCE', padX, top);
+  g.fillStyle = COL.text; g.font = font(F.h * 0.032, 800);
+  g.fillText(fmt(G.dist) + 'm', padX, top + F.h * 0.015);
+  g.fillStyle = 'rgba(255,212,94,.75)'; g.font = font(F.h * 0.0115, 700);
+  g.fillText('ASSET ' + yen(G.asset), padX, top + F.h * 0.050);
+
+  g.textAlign = 'right';
+  g.fillStyle = COL.muted; g.font = font(F.h * 0.0105, 700);
+  g.fillText('BEST', F.w - padX, top);
+  g.fillStyle = COL.gold; g.font = font(F.h * 0.018, 800);
+  g.fillText(fmt(SAVE.bestDistance) + 'm', F.w - padX, top + F.h * 0.015);
+  g.fillStyle = 'rgba(139,160,189,.7)'; g.font = font(F.h * 0.010, 700);
+  g.fillText(phaseName(G.dist), F.w - padX, top + F.h * 0.038);
+  g.restore();
 }
 
 function drawOverlayText() {
   const g = ctx;
-  if (G.state === 'count') {
-    const rem = G.countLen - G.countT;
-    const n = Math.ceil(rem);
-    const txt = n <= 0 ? 'START!' : String(n);
-    const frac = 1 - (rem - Math.floor(rem));
-    const sc = 1 + 0.35 * (1 - Math.min(1, frac * 3));
-    g.save();
-    g.translate(F.w / 2, F.h * 0.42); g.scale(sc, sc);
-    g.font = '900 ' + (F.h * 0.11) + 'px -apple-system,BlinkMacSystemFont,sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.lineWidth = F.h * 0.018; g.strokeStyle = 'rgba(0,0,0,.6)'; g.strokeText(txt, 0, 0);
-    g.fillStyle = '#ffd45e'; g.fillText(txt, 0, 0);
-    g.restore();
-    if (G.practice) hint(g, '押す→右 / 離す→左');
-  }
-  if (G.state === 'play' && G.practice) hint(g, '練習：柄を掴んでみよう');
-  if (G.banner) {
-    const a = Math.min(1, G.bannerT * 3);
-    g.save(); g.globalAlpha = a;
-    g.font = '900 ' + (F.h * 0.038) + 'px -apple-system,BlinkMacSystemFont,sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    const y = F.h * 0.30;
-    g.lineWidth = F.h * 0.010; g.strokeStyle = 'rgba(0,0,0,.6)'; g.strokeText(G.banner.text, F.w / 2, y);
-    g.fillStyle = G.banner.color; g.fillText(G.banner.text, F.w / 2, y);
-    g.restore();
-  }
-  if (G.state === 'over' && G.overT < 0.75) {
-    g.save();
-    g.globalAlpha = Math.min(1, G.overT * 4);
-    g.font = '900 ' + (F.h * 0.05) + 'px -apple-system,BlinkMacSystemFont,sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillStyle = '#ff4d5e'; g.fillText('GAME OVER', F.w / 2, F.h * 0.40);
-    g.restore();
-  }
-}
-function hint(g, text) {
-  g.save();
-  g.globalAlpha = 0.75;
-  g.font = '700 ' + (F.h * 0.021) + 'px -apple-system,BlinkMacSystemFont,sans-serif';
-  g.textAlign = 'center'; g.fillStyle = '#8ba0bd';
-  g.fillText(text, F.w / 2, F.h * 0.60);
-  g.restore();
-}
 
-function render() {
-  ctx.setTransform(F.dpr, 0, 0, F.dpr, 0, 0);
-  ctx.fillStyle = '#080b10';
-  ctx.fillRect(0, 0, F.vw, F.vh);
-  const sx = G.shake ? rand(-G.shake, G.shake) : 0;
-  const sy = G.shake ? rand(-G.shake, G.shake) : 0;
-  ctx.save();
-  ctx.translate(F.ox + sx, F.oy + sy);
-  ctx.beginPath(); ctx.rect(-F.ox - 40, -F.oy - 40, F.w + F.ox * 2 + 80, F.h + F.oy * 2 + 80); ctx.clip();
-  drawBackground();
-  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, F.w, F.h); ctx.clip();
-  drawPreview();
-  G.knives.forEach(k => drawKnife(k));
-  if (G.state !== 'title' && G.state !== 'select') drawPlayer();
-  drawEffects();
-  drawOverlayText();
-  ctx.restore();
-  if (G.flash > 0) {
-    ctx.fillStyle = 'rgba(255,80,90,' + (G.flash * 0.42) + ')';
-    ctx.fillRect(0, 0, F.w, F.h);
+  if (G.bannerT > 0 && G.banner) {
+    const a = Math.min(1, G.bannerT * 2.2);
+    g.save();
+    g.globalAlpha = a;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.shadowColor = G.banner.color; g.shadowBlur = F.w * 0.06;
+    g.fillStyle = G.banner.color; g.font = font(F.h * 0.026, 900);
+    g.fillText(G.banner.text, F.w / 2, F.h * 0.155);
+    if (G.banner.sub) {
+      g.shadowBlur = 0; g.font = font(F.h * 0.016, 700); g.fillStyle = 'rgba(232,238,247,.85)';
+      g.fillText(G.banner.sub, F.w / 2, F.h * 0.190);
+    }
+    g.restore();
   }
-  ctx.restore();
-  /* フィールド外（PC等）のマスク */
-  ctx.fillStyle = '#080b10';
-  if (F.ox > 0) {
-    ctx.fillRect(0, 0, F.ox, F.vh);
-    ctx.fillRect(F.ox + F.w, 0, F.vw - F.ox - F.w + 2, F.vh);
+
+  for (const t of G.toasts) {
+    const a = Math.max(0, 1 - t.t / t.life);
+    g.save();
+    g.globalAlpha = a; g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillStyle = t.color; g.font = font(F.h * 0.015, 800);
+    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 5;
+    g.fillText(t.text, Math.min(t.x, F.w * 0.62), t.y);
+    g.restore();
   }
-  if (F.oy > 0) ctx.fillRect(0, 0, F.vw, F.oy);
-  if (F.oy + F.h < F.vh) ctx.fillRect(0, F.oy + F.h, F.vw, F.vh - F.oy - F.h + 2);
+
+  if (G.state === GAME_STATE.READY) {
+    const pulse = 0.65 + 0.35 * Math.sin(G.real * 4);
+    g.save();
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    /* チャートの上でも読めるように、うっすら下地を敷く */
+    g.fillStyle = 'rgba(5,8,14,.62)';
+    g.fillRect(0, F.h * 0.70, F.w, F.h * 0.13);
+    g.globalAlpha = pulse;
+    g.fillStyle = COL.text; g.font = font(F.h * 0.028, 900);
+    g.fillText('TAP TO START', F.w / 2, F.h * 0.745);
+    g.globalAlpha = 0.85;
+    g.fillStyle = COL.muted; g.font = font(F.h * 0.016, 600);
+    g.fillText('タップで上昇／ローソク足の隙間を抜けろ', F.w / 2, F.h * 0.795);
+    g.restore();
+  }
 }
 
 /* ---------------------------------------------------------
-   12. メインループ
+   13. メインループ（§27）
+   物理は delta time ベース。極端に大きな dt は上限で切る。
 --------------------------------------------------------- */
+let lastTs = 0;
 function frame(ts) {
-  if (!G.last) G.last = ts;
-  let dt = (ts - G.last) / 1000; G.last = ts;
-  dt = Math.min(dt, 1 / 20);                          // タブ復帰などの巨大dt対策
+  requestAnimationFrame(frame);
+  const now = ts / 1000;
+  let dt = lastTs ? now - lastTs : 0;
+  lastTs = now;
+  dt = Math.min(dt, 0.033);
+  if (G.freeze > 0) { G.freeze -= dt; render(); return; }   // ヒットストップ
   update(dt);
   render();
-  requestAnimationFrame(frame);
 }
 
 /* ---------------------------------------------------------
-   13. 入力（§36 / §37）
+   14. 入力（§4）：UI以外はどこをタップしても同じ操作
 --------------------------------------------------------- */
 function isUiTarget(e) {
   const t = e.target;
-  return t && t.closest && t.closest('.screen');
+  return !!(t && t.closest && t.closest('.screen'));
 }
 window.addEventListener('pointerdown', e => {
-  Sound.ensure();
   if (isUiTarget(e)) return;
-  G.input.add(e.pointerId);
-  if (G.state === 'pause') resumeGame();
-  e.preventDefault();
-}, { passive:false });
-const release = e => { G.input.delete(e.pointerId); };
-window.addEventListener('pointerup', release);
-window.addEventListener('pointercancel', release);
-window.addEventListener('pointerout', e => { if (e.pointerType === 'mouse') release(e); });
-window.addEventListener('blur', () => { G.input.clear(); G.keyDown = false; });
+  Sound.ensure();
+  if (G.state === GAME_STATE.READY) beginPlay();
+  else if (G.state === GAME_STATE.PLAYING) flap();
+  else if (G.state === GAME_STATE.PAUSED) resumeGame();
+}, { passive:true });
+
 window.addEventListener('keydown', e => {
-  if (e.code === 'Space') { e.preventDefault(); Sound.ensure(); G.keyDown = true; if (G.state === 'pause') resumeGame(); }
+  if (e.code !== 'Space' && e.code !== 'ArrowUp') return;
+  e.preventDefault();
+  if (e.repeat) return;
+  Sound.ensure();
+  if (G.state === GAME_STATE.READY) beginPlay();
+  else if (G.state === GAME_STATE.PLAYING) flap();
+  else if (G.state === GAME_STATE.PAUSED) resumeGame();
 }, { passive:false });
-window.addEventListener('keyup', e => { if (e.code === 'Space') { e.preventDefault(); G.keyDown = false; } }, { passive:false });
-window.addEventListener('contextmenu', e => { if (!isUiTarget(e)) e.preventDefault(); });
+
+/* ブラウザ標準操作の誤発火防止（§25。ゲーム領域に限定する） */
+cv.addEventListener('touchmove', e => e.preventDefault(), { passive:false });
+cv.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('dblclick', e => { if (!isUiTarget(e)) e.preventDefault(); }, { passive:false });
 
-/* バックグラウンド時は自動一時停止（§54） */
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && (G.state === 'play' || G.state === 'count')) {
-    G.resumeState = G.state; G.state = 'pause';
-    G.input.clear(); G.keyDown = false;
-    Sound.stopBgm();
-    scPause.classList.remove('hidden');
-  }
-});
-function resumeGame() {
-  if (G.state !== 'pause') return;
-  scPause.classList.add('hidden');
-  G.state = G.resumeState || 'play';
-  G.last = 0;
-  if (G.state === 'play') { Sound.ensure(); Sound.startBgm(); }
+/* ---------------------------------------------------------
+   15. バックグラウンド移行（§28）：復帰までは物理を進めない
+--------------------------------------------------------- */
+function pauseGame() {
+  if (G.state !== GAME_STATE.PLAYING) return;
+  G.state = GAME_STATE.PAUSED;
+  showScreen(scPause);
 }
+function resumeGame() {
+  if (G.state !== GAME_STATE.PAUSED) return;
+  Sound.ensure();
+  lastTs = 0;
+  G.state = GAME_STATE.PLAYING;
+  showScreen(null);
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
+window.addEventListener('blur', pauseGame);
+window.addEventListener('pagehide', pauseGame);
 
 /* ---------------------------------------------------------
-   14. 画面遷移・UI
+   16. 画面遷移（§15）
 --------------------------------------------------------- */
 const $ = id => document.getElementById(id);
-const hud = $('hud'), scTitle = $('scTitle'), scSelect = $('scSelect'),
-      scTutorial = $('scTutorial'), scResult = $('scResult'), scPause = $('scPause');
+const scTitle = $('scTitle'), scSelect = $('scSelect'), scTutorial = $('scTutorial'),
+      scResult = $('scResult'), scPause = $('scPause');
 const screens = [scTitle, scSelect, scTutorial, scResult, scPause];
+
 function showScreen(el) {
   screens.forEach(s => s.classList.toggle('hidden', s !== el));
-  hud.classList.toggle('hidden', el !== null);
-  if (el === null) hud.classList.remove('hidden');
-}
-function updateHud() {
-  $('hudCatch').textContent = G.catches;
-  $('hudScore').textContent = G.score.toLocaleString();
-  $('hudCombo').textContent = G.combo;
-  $('hudBest').textContent = SAVE.best.catch;
-  const el = $('hudCatch');
-  el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
 }
 
 function goTitle() {
-  G.state = 'title';
-  showScreen(scTitle); hud.classList.add('hidden');
-  $('titleBestCatch').textContent = SAVE.best.catch;
-  $('titleBestScore').textContent = SAVE.best.score.toLocaleString();
+  G.state = GAME_STATE.TITLE;
+  resetRun();
+  $('titleBest').textContent = fmt(SAVE.bestDistance) + 'm';
+  $('titleAsset').textContent = yen(Math.max(SAVE.bestAsset, CONFIG.score.startAsset));
   $('btnSound').textContent = Sound.enabled ? '🔊 SOUND ON' : '🔇 SOUND OFF';
-  Sound.stopBgm();
+  showScreen(scTitle);
 }
+
 function goSelect() {
-  G.state = 'select';
+  G.state = GAME_STATE.SELECT;
   buildCharList();
-  showScreen(scSelect); hud.classList.add('hidden');
+  showScreen(scSelect);
 }
+
 function buildCharList() {
   const list = $('charList');
   list.innerHTML = '';
@@ -1276,28 +1274,29 @@ function buildCharList() {
     card.className = 'char-card' + (ch.id === G.char.id ? ' sel' : '');
     card.dataset.id = ch.id;
     const cnv = document.createElement('canvas');
-    const w = 78, h = 96, dpr = Math.min(window.devicePixelRatio || 1, 3);
-    cnv.width = w * dpr; cnv.height = h * dpr;
-    const g = cnv.getContext('2d'); g.scale(dpr, dpr);
-    drawCardArt(g, ch, w, h);
-    const best = SAVE.characters[ch.id] || { catch:0, score:0 };
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    cnv.width = 78 * dpr; cnv.height = 96 * dpr;
+    const g = cnv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawCardArt(g, ch, 78, 96);
     card.appendChild(cnv);
-    const html = document.createElement('div');
-    html.innerHTML =
-      '<div class="cc-name">' + ch.name + '</div>' +
-      '<div class="cc-trait">' + ch.trait + '</div>' +
-      '<div class="cc-desc">' + ch.desc.replace(/\n/g, '<br>') + '</div>' +
-      '<div class="cc-diff">難易度 ' + ch.diff + '</div>' +
-      '<div class="cc-best">BEST ' + best.catch + ' CATCH</div>';
-    card.appendChild(html);
+    const name = document.createElement('div');
+    name.className = 'cc-name'; name.textContent = ch.name; card.appendChild(name);
+    const trait = document.createElement('div');
+    trait.className = 'cc-trait'; trait.textContent = ch.trait; card.appendChild(trait);
+    const desc = document.createElement('div');
+    desc.className = 'cc-desc'; desc.textContent = ch.desc; card.appendChild(desc);
+    const diff = document.createElement('div');
+    diff.className = 'cc-diff'; diff.textContent = ch.diff; card.appendChild(diff);
     card.addEventListener('click', () => {
-      G.char = ch; SAVE.lastCharacter = ch.id; persist();
-      [].forEach.call(list.children, c => c.classList.toggle('sel', c.dataset.id === ch.id));
+      G.char = ch;
+      SAVE.selectedCharacter = ch.id; persist();
+      [].forEach.call(list.children, el => el.classList.toggle('sel', el.dataset.id === ch.id));
     });
     list.appendChild(card);
   });
 }
-/* 選択カードの絵。画像が未読込のうちは仮キャラを描き、読み込めたら描き直す */
+
 function drawCardArt(g, ch, w, h) {
   g.clearRect(0, 0, w, h);
   const sp = SPRITES[ch.id], img = sp && Sprites.get(sp.normal.file);
@@ -1306,9 +1305,10 @@ function drawCardArt(g, ch, w, h) {
     const dw = img.naturalWidth * r, dh = img.naturalHeight * r;
     g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
   } else {
-    drawCharacter(g, ch, w / 2, h * 0.14, h * 3.05, {});
+    drawCharacter(g, ch, w / 2, h * 0.55, Math.min(w, h) * 0.34, false);
   }
 }
+
 /* 画像が届いたら、開いているキャラ選択画面を描き直す */
 function onSpriteLoaded() {
   if (!scSelect || scSelect.classList.contains('hidden')) return;
@@ -1322,83 +1322,66 @@ function onSpriteLoaded() {
   });
 }
 
-function goTutorial() { G.state = 'tutorial'; showScreen(scTutorial); hud.classList.add('hidden'); }
-function startPractice() {
-  showScreen(null);
-  resetRun(true);
-  startCountdown(2.2);
-}
-function finishTutorial() {
-  SAVE.tutorialSeen = true; persist();
-  startGame(2.2);
-}
-function startGame(countLen) {
-  showScreen(null);
-  resetRun(false);
-  startCountdown(countLen === undefined ? 3.2 : countLen);
-}
+function goTutorial() { G.state = GAME_STATE.TUTORIAL; showScreen(scTutorial); }
+
+/* キャラ選択後：初回だけ操作説明（§17） */
 function afterSelect() {
   if (!SAVE.tutorialSeen) goTutorial();
-  else startGame(3.2);
+  else goReady();
 }
 
-function commitScore() {
-  const cs = SAVE.characters[G.char.id] || (SAVE.characters[G.char.id] = { catch:0, score:0 });
-  let newBest = false;
-  if (G.catches > SAVE.best.catch || (G.catches === SAVE.best.catch && G.score > SAVE.best.score)) {
-    if (G.catches > SAVE.best.catch) newBest = true;
-    SAVE.best.catch = Math.max(SAVE.best.catch, G.catches);
-    SAVE.best.score = Math.max(SAVE.best.score, G.score);
-  }
-  if (G.catches > cs.catch || (G.catches === cs.catch && G.score > cs.score)) {
-    cs.catch = Math.max(cs.catch, G.catches);
-    cs.score = Math.max(cs.score, G.score);
-  }
-  persist();
-  G.newBest = newBest;
-}
+/* ---------------------------------------------------------
+   17. リザルト（§21）
+--------------------------------------------------------- */
 function showResult() {
-  $('resCatch').textContent = G.catches;
-  $('resScore').textContent = G.score.toLocaleString();
-  $('resRate').textContent = getRate() + '%';
-  $('resBest').textContent = SAVE.best.catch;
-  $('resPerfect').textContent = G.grades.PERFECT;
-  $('resGreat').textContent = G.grades.GREAT;
-  $('resGood').textContent = G.grades.GOOD;
-  $('resultTitleName').textContent = rankTitle(G.catches);
-  $('resultChar').textContent = '使用キャラ: ' + G.char.name;
-  $('resultReason').textContent = G.overQuote;
+  const m = Math.floor(G.dist);
+  $('resDistance').textContent = fmt(m) + 'm';
+  $('resBest').textContent = fmt(SAVE.bestDistance) + 'm';
+  $('resAsset').textContent = yen(G.asset);
+  $('resRisk').textContent = fmt(G.riskPoints);
+  $('resultReason').textContent = G.overReason;
+  $('resultTitleName').textContent = rankTitle(m);
+  $('resultChar').textContent = '使用キャラ: ' + G.char.name + '　ローソク足 ' + G.candles + '本';
   $('resultNewBest').classList.toggle('hidden', !G.newBest);
-  scResult.classList.remove('hidden');
+  showScreen(scResult);
 }
 
-/* ---- ボタン ---- */
+/* ---------------------------------------------------------
+   18. ボタン
+--------------------------------------------------------- */
 $('btnStart').addEventListener('click', () => { Sound.ensure(); goSelect(); });
 $('btnHowto').addEventListener('click', () => { Sound.ensure(); goTutorial(); });
 $('btnSound').addEventListener('click', () => {
-  Sound.ensure(); Sound.setEnabled(!Sound.enabled);
+  Sound.ensure();
+  Sound.setEnabled(!Sound.enabled);
   $('btnSound').textContent = Sound.enabled ? '🔊 SOUND ON' : '🔇 SOUND OFF';
 });
 $('btnBackTitle').addEventListener('click', goTitle);
 $('btnGo').addEventListener('click', () => { Sound.ensure(); afterSelect(); });
-$('btnTutorialGo').addEventListener('click', () => { Sound.ensure(); startPractice(); });
-$('btnTutorialSkip').addEventListener('click', () => { SAVE.tutorialSeen = true; persist(); startGame(3.2); });
-$('btnRetry').addEventListener('click', () => { Sound.ensure(); startGame(1.2); });   // 1タップ即再開（§30）
+$('btnTutorialGo').addEventListener('click', () => {
+  Sound.ensure();
+  SAVE.tutorialSeen = true; persist();
+  goReady();
+});
+/* GAME OVER → RETRY → 即再開（タイトルへは戻さない／§15） */
+$('btnRetry').addEventListener('click', () => { Sound.ensure(); goReady(); });
 $('btnChangeChar').addEventListener('click', goSelect);
 $('btnResume').addEventListener('click', resumeGame);
 $('btnShare').addEventListener('click', () => {
-  /* 本文にURLまで含めて渡す（url パラメータは使わない＝実行中のURLが混ざる余地をなくす） */
-  const text = '🔪 落ちるナイフを掴め！\n\nSCORE：' + G.score.toLocaleString() +
-               '\nGET率：' + getRate() + '%\n\n#株クラRPG\n\n' + GAME_URL;
-  /* X の Web Intent。ゲーム側はログイン情報もAPIキーも持たない */
-  window.open('https://x.com/intent/post?text=' + encodeURIComponent(text), '_blank', 'noopener');
+  const text =
+    '📈 CHART RIDER\n\n' +
+    'DISTANCE：' + fmt(G.dist) + 'm\n' +
+    'ASSET：' + yen(G.asset) + '\n\n' +
+    '相場についていけ。\n\n#株クラRPG';
+  const url = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(text) +
+              '&url=' + encodeURIComponent(GAME_URL);
+  window.open(url, '_blank', 'noopener');
 });
 
 /* ---------------------------------------------------------
-   15. 起動
+   19. 起動
 --------------------------------------------------------- */
-Sprites.preload();          // タイトル表示前に全ポーズを先読み
 resize();
-G.player.x = F.w * 0.5;
+Sprites.preload();
 goTitle();
 requestAnimationFrame(frame);
